@@ -13,6 +13,12 @@ release/
 __pycache__/
 *.py[cod]
 
+# --- 本机虚拟环境 ---
+# .venv-build 在 0.3.1 副本里（构建用，含 torch+CUDA，约 6 GiB）；
+# .venv-llm 在本仓库里（LLM 实验后端用，2026-09-16 由系统 Python 3.13.2 建）。
+# 两者都是本机状态、体积大且可从 requirements 重建，不入库。
+.venv-llm/
+
 # --- 一次性探针的编译产物（review_041_quant/ 里审查用的 .java 会生成同名 .class）---
 *.class
 
