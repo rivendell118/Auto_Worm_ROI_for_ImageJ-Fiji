@@ -1,0 +1,34 @@
+MIT License
+
+Copyright (c) 2026 rivendell118
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+这层 MIT 许可覆盖的是「自动圈虫」项目自身的代码与文档（`src/`、`plugin_src/`、
+`tests/`、`diagnostics/` 以及各份说明文档）。
+
+它不覆盖随运行包分发的第三方组件，那些组件仍按各自的许可分发，见
+`licenses/THIRD-PARTY-NOTICES.txt`。其中 NVIDIA 的 CUDA 与 cuDNN 动态库不是
+开源软件，不得把它们单独取出再分发，详见该目录下的两份 NVIDIA 协议。
+
+The MIT license above covers the AutoWorm project's own code and documentation.
+It does not cover the third-party components shipped alongside it; those remain
+under their own licenses, listed in licenses/THIRD-PARTY-NOTICES.txt.

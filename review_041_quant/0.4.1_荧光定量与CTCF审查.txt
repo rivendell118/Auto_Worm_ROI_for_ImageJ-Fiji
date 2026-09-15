@@ -1,0 +1,173 @@
+Auto Worm ROI 0.4.1：荧光定量与 CTCF 专项审查
+日期：2026-09-15
+审查目录：<0.4.1 仓库根>
+对照对象：本机 ImageJ 1.54p 的 Analyzer / ImageStatistics
+
+一、结论
+
+在“同一份磁盘图像、同一套 ROI、同一套有效校准、不限制阈值、不重定向到别的图像”的条件下，
+插件的 Area、Mean、Min、Max、Median、IntDen 及由这些数计算的 CTCF 与 ImageJ 一致。
+本轮真实样例的 10 条虫体 ROI 和 1 个背景 ROI，包含 RawIntDen 在内的七项测量全部一致，
+CTCF 也一致。该真实样例有空间校准，没有强度校准。
+
+不能把这一结论写成“任何条件下与 ImageJ 完全无差别”。本轮确认：
+1. 一个需要修复的校准提示遗漏：临时强度校准可能被静默忽略。
+2. 一个同名测量列的兼容性差异：强度校准后的 16 位图，RawIntDen 与 ImageJ 1.54p 不一致。
+3. 两项有意选择的行为：不继承 Limit to Threshold 和 Redirect To；文档需要明确适用条件。
+
+0.4.1 的 ROI 边界修复在本轮七类合成形状中通过了真正的 ImageJ 像素集合检查。
+没有复现上一版“边界少一圈”的问题；检查同时比较了梯度图荧光值，而非只比较面积。
+
+二、需要修复的问题
+
+[P2] 临时强度校准可能被静默忽略，CTCF 与当前 ImageJ 窗口测量不一致
+
+位置：
+plugin_src/Auto_Worm_ROI.java:287-288（只以 ImagePlus.changes 判断是否提醒）
+plugin_src/Auto_Worm_ROI.java:425（重新从磁盘打开图像）
+
+触发条件：
+用户在 ImageJ 中使用 Analyze > Calibrate 设置局部强度校准，没有将校准保存回 TIFF，
+也没有开启 Global calibration，随后调用插件。
+
+原因：
+ImageJ 1.54p 的 Calibrator 校准逻辑更新 Calibration，但不设置 ImagePlus.changes；
+其 setup 也声明 NO_CHANGES。插件只检查 changes，因此可能直接通过提醒检查。
+后续重新打开磁盘文件，读取的是旧校准，当前窗口中的校准没有参与计算。
+“重新读磁盘”本身有合理用途，遗漏的是对校准差异的检查和明确提示。
+
+复现：
+16 位图，虫体 100 像素、每像素 100，背景每像素 20。
+通过 ImageJ Calibrator.calibrate 的实际实现设置 y = 10 + 2x 的局部强度校准。
+为避免弹出对话框，探针以反射填写对话框收集后的参数；校准和测量使用原版 ImageJ 实现。
+得到：
+  changes=false
+  插件 confirmUnsavedChanges 返回 true，未弹提示
+  当前 ImageJ 窗口的 CTCF = 16000
+  插件按磁盘文件测量的 CTCF = 8000
+
+将校准保存进 TIFF 后重新打开，插件 CTCF 与 ImageJ 又一致。
+该问题不是 CTCF 公式错误，而是两边使用了不同校准。
+注意：Set Scale 的实现会设置 changes，不能把这个无提示结论笼统推广到所有 GUI 标定操作。
+
+建议：
+在启动/测量前比较当前图像的局部校准与磁盘校准，发现差异时说明将采用哪一份；
+提醒用户保存校准后再处理。检查不能只依赖 changes。
+同时在测量输出中记录空间单位、像素宽高、强度单位/校准函数和全局校准是否生效。
+
+三、已确认的测量兼容性差异
+
+1. [P2，兼容性与说明] 16 位强度校准图的 RawIntDen 与 ImageJ 1.54p 同名列不同
+
+位置：plugin_src/Auto_Worm_ROI.java:516-529，特别是第 529 行。
+
+插件：
+  getRawStatistics() 取得不做强度校准的统计；
+  RawIntDen = raw.pixelCount × raw.mean。
+
+本机 ImageJ 1.54p Analyzer：
+  RawIntDen = stats.pixelCount × stats.umean；
+  该版本 ShortStatistics 在有强度校准时，umean 实际被赋成校准后的 mean。
+已对本机 ij.jar 的字节码核对，并用保存后重新打开的校准 TIFF 实测。
+
+同一组 100 像素、每像素原始值 100 的 ROI，强度校准 y = 10 + 2x：
+  插件 RawIntDen = 10000
+  ImageJ 1.54p RawIntDen = 21000
+  在像素宽高均为 0.5、背景原始值为 20 时，双方 CTCF 均为 4000。
+
+这不意味着插件的原始像素求和算错。10000 确实是原始值之和；差别来自 ImageJ 1.54p
+在这个条件下的具体实现。因此不建议为了同名列一致就直接把插件改成求和校准后的像素。
+应明确选择“严格复现 ImageJ 同名列”还是“始终输出真正的原始像素和”，并说明/区分列名。
+README 当前把全部列统称为 ImageJ 本体测量，说明不够准确。
+
+本轮无强度校准的 16 位图、8 位图的相关组合和正常 32 位浮点图没有复现这一 RawIntDen 差异。
+结论绑定于本次实际对照的 ImageJ 1.54p，不据此推断其它 ImageJ 版本。
+
+2. Limit to Threshold 不参与插件测量
+
+位置：plugin_src/Auto_Worm_ROI.java:45-46、518。
+
+MEASURES 为固定选项，不包含 Measurements.LIMIT。
+因此插件统计整个 ROI，而手工 Analyze > Measure 若启用了 Limit to Threshold，
+只统计 ROI 内符合阈值的像素。两边 Area、Mean、IntDen、背景均值和 CTCF 都可能不同。
+
+16 位合成图示例，阈值 50..150：
+  插件虫体 Area = 600；ImageJ 限阈值 Area = 312。
+  插件 CTCF = -15266.666666666672。
+  ImageJ 限阈值测量后套同一公式 = -9252.563380281696。
+
+本例双方背景都有可测像素，差异不是“空背景”造成的。
+按完整 ROI 进行荧光测量可以是合理设计，不宜自动当作算法错误。
+应在文档中说明：对照手工测量时，关闭 Limit to Threshold；如要支持阈值测量，应作为明确模式。
+
+3. Redirect To 不参与插件测量
+
+插件直接统计原图，不继承 Analyzer 的重定向目标。这是已有代码的明确设计，
+避免输出行标原图名、实际却量到另一张图。
+将重定向目标的亮度设为原图 2 倍时：插件 CTCF 8000，手工重定向测量 CTCF 16000。
+对照测试必须将 Redirect To 设为 None；此项无需为了“一致”而撤销当前保护。
+
+四、CTCF 的实际计算方式与校准含义
+
+代码实际执行：
+  Area = ImageJ 校准后的面积
+  Mean = ImageJ 校准后的平均强度
+  IntDen = Area × Mean
+  CTCF = 虫体 IntDen - 虫体 Area × 背景 Mean
+  RawCTCF = 原始像素和 - 虫体像素数 × 背景原始均值
+
+这里 ImageJ 提供统计量，CTCF 的减法由插件第 493 行执行。
+ImageJ 的常规 Analyze > Measure 不直接输出一个内置 CTCF 列。
+README 第 15 行提到调用 Analyzer，当前代码实际已改为直接调用 ImageStatistics 路径；应更新描述。
+
+只存在空间校准、没有强度校准时：
+  CTCF = RawCTCF × pixelWidth × pixelHeight。
+这不是算法偏差，而是单位不同。
+本轮真实样例像素宽高均为 1.3810685880092863 micron，倍率约 1.907350444785964。
+因此 CTCF 和 RawCTCF 数值不同完全可能是正常的；RawCTCF 不因接入 ImageJ 就在数学上失效。
+
+ImageJ 全局校准也会影响插件：同一磁盘文件，无全局标定时 CTCF=8000，
+启用 0.5×0.5 的全局像素尺寸后 CTCF=2000，手工 ImageJ 同样为 2000。
+当前 CSV 只记录 MeasurementBackend，没有记录有效校准。
+建议补充校准来源和单位，方便解释不同机器/会话间的数值变化。
+
+五、本轮实际验证
+
+1. Python 原有回归套件：112/112 通过；使用 -B 运行。
+2. Java 数值探针直接调用 dist/Auto_Worm_ROI.jar 的私有测量方法，对照本机 ij.jar 的 Analyzer。
+   覆盖 8/16/32 位图，矩形/椭圆/普通多边形/带孔 ShapeRoi，空间校准、强度校准、阈值和重定向。
+   常规六项统计与 CTCF 均一致；RawIntDen 的 16 位强度校准差异见上。
+3. 七类从当前 Python 源码导出的 ROI：矩形、椭圆、带孔、贴边、单像素、对角接触、背景。
+   用原版 ImageJ RoiDecoder 读取，并根据测量处理器实际使用的 ROI/mask 比较每个像素。
+   每类 missing=0、extra=0；梯度图均值也相等。
+   未把测试文件中的自制 shape_pixels 当作 ImageJ 的替身。
+4. 发布 EXE 在隔离目录以低清模型/CUDA 跑一张真实 TIFF：10 条虫，PASS，退出码 0。
+   对生成的 10 条虫体 ROI + 1 个背景，七项荧光/面积统计和 CTCF 与 ImageJ 全部一致。
+   原始图：test/test01/0710-0-1 green.tif；运行使用复制到审查目录的图像。
+5. EXE 中 13 个运行模块与当前源码一致；9 个未打包模块为训练/评测等脚本。
+6. 当前 Java 源码在审查目录重编后，7 个 class 与发布 jar 逐字节一致。
+7. 仓库 lib/ij.jar 与 <本机 Fiji>\jars\ij-1.54p.jar 的 SHA256 一致：
+   2E1A09961DFB41CEE66DDC821B2577A41A072566CE45A49BAE69267099741E20
+8. 本轮被测插件 jar SHA256：
+   2B076236E3F75AEF3D094FC309C6F6521F907EC84D6C82B70FEE7CB2A4E95061
+
+此次未修改被审查版本的源码、文档或发布包，未覆盖本机 Fiji。
+探针、样例和本文留在 <审查材料目录>。
+没有在本轮执行完整 Fiji 人工交互验收；上述 Calibrator 复现使用其实际计算方法并跳过对话框。
+单张真实图和合成用例足以复核上述发现，不代表覆盖所有图像、所有插件设置或所有 ImageJ 版本。
+
+六、建议处理顺序
+
+先补“临时强度校准与磁盘校准不同”的检查和提示，再明确 RawIntDen 的语义及兼容性，
+随后更新文档中的阈值/重定向/CTCF 实际计算路径说明，并补充有效校准的输出记录。
+现有 CTCF 公式无需重写；本轮验证通过的 ROI 像素边界导出也无需因此改回旧版。
+
+参考依据（另已对本机 ImageJ 1.54p 二进制和数值进行核验）：
+ImageJ Analyze 菜单说明（面积、均值、IntDen、RawIntDen、阈值、重定向和校准）：
+https://imagej.net/ij/docs/menus/analyze.html
+ImageJ Analyzer 源码：
+https://imagej.net/ij/developer/source/ij/plugin/filter/Analyzer.java.html
+ImageJ Calibrator 源码：
+https://imagej.net/ij/developer/source/ij/plugin/filter/Calibrator.java.html
+ImageJ ShortStatistics 源码：
+https://imagej.net/ij/developer/source/ij/process/ShortStatistics.java.html

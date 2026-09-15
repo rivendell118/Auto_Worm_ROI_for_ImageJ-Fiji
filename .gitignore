@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------
+# 自动圈虫 0.4.2 CUDA for ImageJ
+# 只跟踪源码、测试、模型、文档与构建依赖；产物和大体积数据不入库。
+# ---------------------------------------------------------------
+
+# --- 打包与编译产物 ---
+dist/
+build/
+# 发布 zip（约 3.1 GiB）由 make_release.py 重建，不入库
+release/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+
+# --- 一次性探针的编译产物（review_041_quant/ 里审查用的 .java 会生成同名 .class）---
+*.class
+
+# --- 运行期残留 ---
+# _atomic_write 会留下 <名>.<32位hex>.tmp.<扩展名>
+*.tmp
+*.tmp.*
+
+# --- 可再生的验证输出（由 tests/ 里的集成测试重建）---
+validation_output/
+validation_outputs/
+validation_gui_input/_auto_roi/
+
+# --- 可再生的测试样例（合成 TIFF，由 diagnostics/make_test_samples.py 重建）---
+diagnostics/test_samples/
+
+# --- 大体积训练数据（144 MB，另有工作区备份）---
+tests/train_data_v020/
+tests/preview/
+
+# --- 0.4.2 的训练集与训练产物（由 src/build_supplement_dataset.py 与 src/train_*.py 重建）---
+training/
+
+# --- 复审/探针的工作目录（一次性的：探针、夹具、日志、桥接残留、真实样例副本）---
+# 只收三份审查报告本身，它们是 CHANGELOG 与 VALIDATION 引用的证据。
+review_041_quant/*
+!review_041_quant/*.txt
+!review_041_quant/*.md
+
+# --- 本机工具状态 ---
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

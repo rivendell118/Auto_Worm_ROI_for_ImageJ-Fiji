@@ -1,0 +1,125 @@
+Auto Worm ROI 0.4.1 第二轮 Bug 复审
+日期：2026-09-15
+审查目录：<0.4.1 仓库根>
+审查重点：会导致错测、漏测、旧结果残留或用户误判的实际缺陷
+
+结论
+
+上一轮发现的“ImageJ 窗口临时强度校准被静默忽略”已经在当前源码和发布 jar 中修复，
+本轮没有把它重复列为未修 bug。常规条件下的荧光统计、ROI 像素选择和 CTCF 公式仍然正确。
+
+本轮确认 4 项缺陷：
+  P1  1 项：单图 CSV 保存失败后，该图仍会进入合并测量表。
+  P2  3 项：失败图遗留上一轮单图 CSV；停止后已完成 ROI 不交给 ImageJ；
+             保存校准后可能因浮点序列化误差反复提示校准不同。
+
+建议修完前三项再把 0.4.1 作为测试版分发。第 4 项不改不会改变数值，但会造成明显误提示。
+
+一、[P1] 单图测量表保存失败，数据仍会进入合并表
+
+位置：
+  plugin_src/Auto_Worm_ROI.java:607-609
+  plugin_src/Auto_Worm_ROI.java:645-670
+
+触发条件：某张图已经测量完成，但 <图名>_measurements.csv 无法写入，例如目标被同名目录占用、
+文件被锁定或磁盘发生写入错误；同一批后面至少还有一张可以正常保存的图。
+
+原因：measureWithImageJ 在返回单图 ResultsTable 之前，已经把该图的所有行追加到 combined；
+随后 one.saveAs 失败，外层 catch 把这张图记为“跳过”，却没有从 combined 撤回那些行。
+只要后续有一张图成功，combined 最终仍会保存。
+
+本轮对当前发布 jar 的复现结果：
+  日志：aaa_bad.tif 无法测量，已跳过
+  aaa_bad_measurements.csv：没有生成（路径被同名目录占用）
+  ImageJ_measurements_all.csv：同时含 aaa_bad.tif 和 bbb_good.tif
+
+这会让日志、单图表和合并表互相矛盾，属于会污染科研结果的错误。
+
+建议：先生成单图结果但不要追加到 combined；单图表可靠保存后，再把该图各行追加到 combined。
+更稳妥的做法是单图 CSV 与合并 CSV 都采用“临时文件写完后原子替换”。
+
+二、[P2] 本轮测量失败时，上一轮同名单图 CSV 仍留在输出目录
+
+位置：
+  plugin_src/Auto_Worm_ROI.java:542-562 只清理合并表
+  plugin_src/Auto_Worm_ROI.java:571-618 没有在尝试单图测量前清理/隔离旧单图表
+  src/batch_worm_roi.py:928-931 只识别并删除 Python 表头，不会删除 ImageJ 生成的表
+
+触发条件：复用输出目录；上一轮该图测量成功；本轮 ROI ZIP 损坏、无法解码，或 Java 测量阶段失败。
+
+本轮对当前发布 jar 的复现结果：
+  预置 aaa_bad_measurements.csv，内容中的 Image 为 OLD.tif，CTCF 为 999；
+  本轮 aaa_bad_RoiSet.zip 损坏，bbb_good.tif 正常；
+  日志明确说 aaa_bad.tif 已跳过，新的合并表不含它；
+  但旧 aaa_bad_measurements.csv 仍存在，且仍含 OLD.tif。
+
+用户从输出目录逐图查看时无法知道它属于上一轮，可能把旧 CTCF 当成本轮结果。
+
+建议：测量某张图前识别并移走/删除由插件生成的旧单图表；本轮成功保存后才替换。
+如果测量失败，应保证该图不存在一个看似本轮生成的旧表。识别表头时应兼容 0.4.0、
+0.4.1 以及以后增加列的版本。
+
+三、[P2] 用户停止批处理后，已经完整写出的 ROI 不会交给 ImageJ 测量
+
+位置：
+  src/worm_roi_gui.py:1672-1673 保存整批文件名与 completed_stems
+  src/worm_roi_gui.py:1803-1809
+
+触发条件：批处理中至少已经完成一张图，然后用户点击“停止”，或关闭窗口并选择处理完当前图后退出。
+
+原因：run_gui_batch 会保留已经完成的 ROI 和 batch_summary.csv，并返回已完成结果；界面也提示
+“当前图片将完整写出”。但 _processing_finished 看到 stop_requested 后只发送：
+  status=cancelled，input/output 均为空
+Java 对 cancelled 只更新状态栏，不测量任何 ROI。
+
+本轮用当前源码直接驱动该分支：job 中 completed_stems 为 a、b，得到的唯一通知仍是
+  ('cancelled', '', '')
+因此 a、b 的 ROI 已存在，ImageJ 测量表却不会生成。README 还写明中途取消能拿到已完成部分，
+实际在 ImageJ 后端只能拿到 ROI 和汇总，拿不到荧光与 CTCF。
+
+建议：如果存在已完成图，发送 complete 通知，并把完成清单限制为 completed_stems 对应的原文件名；
+消息中说明该批由用户提前停止。只有一张都没完成时才发送 cancelled。
+
+四、[P2] 已保存的空间校准可能被误判为“窗口与磁盘不同”
+
+位置：plugin_src/Auto_Worm_ROI.java:354-356。
+
+原因：pixelWidth、pixelHeight、pixelDepth 使用 double 精确不等比较。TIFF 保存空间校准时会发生
+有限精度序列化；保存完成后，窗口仍保留写入前的 double，重新打开的磁盘图像得到量化后的值。
+两者测量含义相同或误差极小，但精确比较会认为不同。
+
+当前发布 jar 的复现：
+  窗口 pixelHeight = 0.123456789
+  保存并重读后 = 0.1234567901234568
+  window.changes = false
+  calibrationDifference 仍返回“空间校准不同”
+
+1/3、0.123456789012345 和真实样例附近的 1.3810685880092863 也都能复现。
+用户已经按提示保存，再次调用仍可能看到同一提示，只能点“确定”继续。
+
+建议：空间尺度使用与 TIFF 序列化精度相称的相对/绝对容差比较；pixelDepth 对当前单页二维面积、
+荧光和 CTCF 没有影响，也不应单独触发该提示。真正不同的空间单位和明显尺度差仍应提示。
+
+五、已核实没有回归的部分
+
+1. 当前 Java 源码重编所得 7 个 class 与 dist/Auto_Worm_ROI.jar 逐字节一致。
+2. 发布 EXE 内 13 个运行模块与当前 src 源码一致；未打包的 9 个均为训练/评估类脚本。
+3. 发布 zip 内 jar、README、CHANGELOG、VALIDATION 与当前 dist/仓库副本一致。
+4. Python 回归测试 112/112 通过。
+5. 当前发布 jar 的 AutoWormBridgeQueueTest 通过（5 个队列时序情形）。
+6. 当前发布 jar 的 AutoWormMeasurementTest 通过（既有测量失败隔离、旧合并表与校准记录测试）。
+   本轮前三个缺陷没有被这些既有测试覆盖。
+7. 上轮已验证的常规荧光定量结论仍成立：相同磁盘图像、相同 ROI、相同有效校准、
+   不启用 Limit to Threshold/Redirect To 时，Area、Mean、Min、Max、Median、IntDen 和 CTCF
+   与 ImageJ 1.54p 一致；半像素 ROI 修复也仍然正确。
+
+六、本轮范围
+
+此次为只读复审，没有修改被审查目录的源码、文档、构建产物或发布包，也没有覆盖本机 Fiji。
+复现程序和输出留在：<审查材料目录>
+
+本轮结论以当前构建为准：
+  Auto_Worm_ROI.jar SHA256
+  98D6C06BBC7D93035ED798B85AA6C88FFCC612082023A1D1AB16FE8592F26633
+  AutoWormGUI.exe SHA256
+  DCC7D1280A61B398DEE3BBAD5D5103C8A2E8E66E5361CFFB31F784C08628A4F

@@ -1,0 +1,108 @@
+自动圈虫 0.4.0 CUDA for ImageJ —— 第三方组件与许可声明
+====================================================================
+
+本文件说明 AutoWormImageJ 运行包里随软件分发的第三方组件、各自的许可，以及
+许可全文在包内的位置。本文件只涉及第三方组件；「自动圈虫」项目自身的代码与
+文档按 MIT 许可发布，全文见发行包根目录的 LICENSE。
+
+许可全文一览（本目录下）：
+  NVIDIA-CUDA-EULA.txt   NVIDIA CUDA Toolkit 最终用户许可协议
+  NVIDIA-cuDNN-SLA.txt   NVIDIA cuDNN 软件许可协议
+  Pillow-LICENSE.txt     Pillow 许可
+  roifile-LICENSE.txt    roifile 许可
+
+后两个之所以放在这里，是因为打包时 PyInstaller 没有把这两个包的 dist-info
+带进运行包（其余组件的许可全文在包内各自的位置，见下表）。
+
+
+1. NVIDIA 组件
+--------------------------------------------------------------------
+
+本软件**不含** NVIDIA 显卡驱动。运行包里有的是下面这些 NVIDIA 可再发行运行
+库，全部位于 _internal\torch\lib\：
+
+  cudart64_13.dll                       CUDA 运行库
+  cublas64_13.dll  cublasLt64_13.dll    cuBLAS
+  cudnn64_9.dll 及 cudnn_adv64_9.dll 等 cuDNN（共 10 个 cuDNN 动态库）
+  cufft64_12.dll  cufftw64_12.dll       cuFFT
+  curand64_10.dll                       cuRAND
+  cusolver64_12.dll  cusolverMg64_12.dll cuSOLVER
+  cusparse64_12.dll                     cuSPARSE
+  nvrtc64_130_0.dll  nvrtc-builtins64_132.dll  NVRTC
+  nvJitLink_130_0.dll                   nvJitLink
+  cupti64_2026.1.1.dll                  CUPTI
+
+这些库的再分发依据是 NVIDIA CUDA Toolkit 最终用户许可协议（正文见
+NVIDIA-CUDA-EULA.txt），其中第 2.6 节 Attachment A 逐项列出了可再发行的
+CUDA Toolkit 文件，并注明文件名中可以带版本号与架构信息。cuDNN 不由该附件
+覆盖，它依据 cuDNN 软件许可协议（正文见 NVIDIA-cuDNN-SLA.txt），该协议
+cuDNN 补充条款第 2 节写明可再发行的是「运行库 .so 与 .dll」。
+
+本软件满足协议中 1.1.2「分发要求」的前提：本软件是具有实质性额外功能的应
+用（线虫分割与 ROI 生成），这些库只由本软件调用，其分发条款与本协议不冲突。
+
+随附下列声明：
+
+  This software contains source code provided by NVIDIA Corporation.
+
+说明：协议 1.1.2 要求该声明出现在「所分发的示例源码的修改与衍生作品」中，
+本软件并未分发 NVIDIA 的示例源码，因此严格说该条并不适用；此处仍按业界惯
+例保留该声明，以免歧义。
+
+NVIDIA 未对本软件作任何形式的认可或担保。协议中的下列限制同样适用于这些
+NVIDIA 组件，请一并遵守：
+
+  - 不得暗示本软件由 NVIDIA 赞助或认可（协议 2.3）。
+  - 不得对这些库做反向工程、反编译或反汇编，也不得移除其中的版权或专有声明
+    （协议 2.1）。
+  - 不得把这些库当作独立产品分发，也不得单独分发（协议 2.2）。
+  - 不得以任何方式使用这些库，致使它们受制于要求开放源代码、允许制作衍生作
+    品或要求免费再分发的开源许可（协议 2.5）。
+  - 这些库按「现状」提供，不附带任何担保；NVIDIA 明确声明这些库未针对医疗、
+    生命支持等关键应用做过测试或认证（协议 2.6）。本软件仅供科研使用，不得
+    用于临床诊断或任何生命安全相关的用途。
+
+
+2. 开源组件
+--------------------------------------------------------------------
+
+下表路径均相对于运行包根目录 AutoWormImageJ\。
+
+  组件            版本              许可            许可全文位置
+  ------------------------------------------------------------------
+  PyTorch         2.14.0+cu132      Apache-2.0 等   _internal\torch-2.14.0+cu132.dist-info\licenses\LICENSE
+  NumPy           2.5.3             BSD-3-Clause    _internal\numpy-2.5.3.dist-info\licenses\LICENSE.txt
+  SciPy           1.18.1            BSD-3-Clause    _internal\scipy-1.18.1.dist-info\LICENSE.txt
+  OpenCV          5.0.0.93          Apache-2.0      _internal\opencv_python_headless-5.0.0.93.dist-info\LICENSE.txt
+  MarkupSafe      3.0.3             BSD-3-Clause    _internal\markupsafe-3.0.3.dist-info\licenses\LICENSE.txt
+  Pillow          12.3.0            MIT-CMU         licenses\Pillow-LICENSE.txt
+  roifile         2026.7.30         BSD-3-Clause    licenses\roifile-LICENSE.txt
+  setuptools      （随 PyInstaller 打入） MIT        _internal\setuptools\（见包内 setup.py 声明）
+  Tcl/Tk          随 Python 3.13    Tcl/Tk 许可     _internal\_tk_data\license.terms
+  Python          3.13.2            PSF 许可        python313.dll（PSF 许可不要求在二进制分发中附全文）
+  Microsoft VC++ 运行库             可再发行        msvcp140.dll、vcruntime140.dll 等，按 Microsoft 可再发行条款
+
+PyTorch 的 licenses\third_party\ 目录下还有它自身携带的 100 多项第三方组件的
+许可全文，未在上表逐条罗列。OpenCV 另有 LICENSE-3RD-PARTY.txt 记录其打包进
+去的第三方组件。zlib1.dll 与 libffi-8.dll 分别随 Python、Tcl/Tk 分发，适用
+各自的 zlib 许可与 MIT 许可。
+
+
+3. 本目录内两份 NVIDIA 许可的出处
+--------------------------------------------------------------------
+
+二者均为从 NVIDIA 官方文档站取回的原始文本，未作删改，仅去掉了网页的导航与
+页脚。取回日期 2026-09-13。
+
+  NVIDIA-CUDA-EULA.txt
+    来源 https://docs.nvidia.com/cuda/eula/index.html
+    原文标注 Last updated on Aug 14, 2026
+    SHA256 5438AE5B7F535F3A22032F7052BD431AD6BA087902AFEE471FFBA56464D1C6BA
+
+  NVIDIA-cuDNN-SLA.txt
+    来源 https://docs.nvidia.com/deeplearning/cudnn/latest/reference/eula.html
+    原文标注 (v. February 22, 2022)
+    SHA256 DFC6F5A266CDA6076C5CC355956EA1120418CEBD6F96008BA8A044A419C98949
+
+重新核对文本是否仍然有效，可按上面的地址取回后计算 SHA256 与上面的值比对；
+不一致说明 NVIDIA 改过协议，需要重新评估本软件是否仍符合其再分发条件。
