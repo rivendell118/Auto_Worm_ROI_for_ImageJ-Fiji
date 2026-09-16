@@ -61,7 +61,7 @@ desktop.ini
 
 # --- 真实实验图像：一张都不入库 ---
 # 图像一旦进了历史，`git rm` 之后仍能从旧提交里按 blob 取出来——删文件和没发布过是两回事。
-# 2026-09-16 为此改写了 0.4.2 与 LLM 两个副本的全部历史（见 AGENT.md 的落地记录）。
+# 2026-09-16 为此改写了 0.4.2 与 LLM 两个副本的全部历史（见仓库外 devdocs\ 的落地记录）。
 # 真实的图放仓库之外的 testdata\；合成样例在 diagnostics/test_samples\（上面已忽略）。
 # 既有显微格式也有导出格式：交付出去、贴进汇报的往往就是 png/jpg，那同样是真实数据。
 # 真要把某张图提交进仓库（比如文档配图），用 `git add -f` 显式放行——
@@ -84,3 +84,40 @@ desktop.ini
 # 仓库根或 src\ 下这一份是迁移前的遗留。2026-09-16 已从全部历史清除；
 # 它一旦进了仓库，别人跑起来界面一开就默认指到开发机的文件夹。
 .worm_roi_gui.json
+# --- 开发文档与历史探针：不入库，集中在仓库外 ---
+# AGENT.md 是交接文档，通篇是本机的目录布局（77 处绝对路径）；tests\ 里那批历史探针
+# 有 29 个带着本机路径。它们同时是某些实验现象的唯一记录，所以是**搬走**而不是删掉。
+# 2026-09-16 从全部历史里清除，现在放在仓库外：
+#   AGENT.md -> 仓库外的 devdocs\（AGENT-0915-0.4.2.md / AGENT-0916-LLM.md）
+#   探针     -> 仓库外的 probes\（两个副本里这批文件逐字节相同，只留一份）
+# 下面把名字列全，是防止被顺手拷回来——**要放回来，先想清楚里面的路径怎么办**。
+AGENT.md
+tests/_diff.py
+tests/_diff_broi.py
+tests/baseline_768.py
+tests/check_isize.py
+tests/compare_models.py
+tests/contact_train_log.txt
+tests/debug_contact.py
+tests/debug_split2.py
+tests/dump_meta.py
+tests/dump_meta2.py
+tests/erosion_0101_probe.py
+tests/eval_contact_model.py
+tests/eval_split.py
+tests/eval_watershed.py
+tests/geom_merged.py
+tests/gt_analysis.py
+tests/param_scan.py
+tests/probe_0101.py
+tests/probe_merging.py
+tests/probe_merging2.py
+tests/proto_split.py
+tests/proto_split2.py
+tests/recheck_n20.py
+tests/survey_merging.py
+tests/sweep_production.py
+tests/verify_contact.py
+tests/verify_contact_br6.py
+tests/vis_geometry.py
+tests/vis_merging.py
