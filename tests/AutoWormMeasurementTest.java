@@ -90,6 +90,8 @@ public class AutoWormMeasurementTest {
             anImageWhoseTableCannotBeWrittenIsNotInTheCombinedTable();
             aTableFromAnEarlierBatchIsRemovedBeforeMeasuring();
             aFileThatOnlyLooksLikeOurTableIsLeftAlone();
+            aTableWhoseColumnsMerelyContainOursIsLeftAlone();
+            anImagesTableIsStillRecognisedByItsRealColumns();
             anImagesTableFromAnEarlierBatchIsRemovedBeforeMeasuring();
             aStaleTableIsNotLeftByAnImageThisBatchCouldNotMeasure();
             aFileThatOnlyLooksLikeAnImagesTableIsLeftAlone();
@@ -232,6 +234,70 @@ public class AutoWormMeasurementTest {
      * that the table is one of ours, and deleting a stranger's file because of its
      * name would be worse than leaving a stale table behind.
      */
+    /**
+     * A table whose header merely contains our column names is not our table.
+     *
+     * The two names that identify a table of ours are checked as whole fields. An
+     * earlier build tested the header as one string with String.contains, so
+     * "RawCTCFValue" and "MeasurementBackendNotes" matched "CTCF" and
+     * "MeasurementBackend" and the file was deleted before it could be measured
+     * into. The output folder is the experimenter's, and the header check exists
+     * precisely so that a file we cannot prove is ours is left where it is.
+     */
+    private static void aTableWhoseColumnsMerelyContainOursIsLeftAlone() throws Exception {
+        Path input = Files.createTempDirectory("autoworm-measure-in-");
+        Path output = Files.createTempDirectory("autoworm-measure-out-");
+        writeTiff(input.resolve("aaa_good.tif"));
+        String header = "Image,RawCTCFValue,MeasurementBackendNotes,Comment";
+        String body = header + "\r\ncell1,0.5,notes,hello\r\n";
+        Path foreign = measurements(output).resolve(COMBINED);
+        Files.write(foreign, body.getBytes(StandardCharsets.UTF_8));
+
+        try {
+            Auto_Worm_ROI.measureOutputFolder(input.toFile(), output.toFile(), null, null, false, false);
+        } catch (Exception expected) {
+            // Measuring nothing is the point of the fixture; it is reported.
+        }
+
+        check(Files.exists(foreign),
+                "a table whose columns merely contain our names was deleted");
+        check(read(foreign).equals(body),
+                "a table whose columns merely contain our names was overwritten: " + read(foreign));
+    }
+
+    /**
+     * The same header test still recognises a real table, so the stricter match
+     * did not turn the cleanup off.
+     *
+     * The image has a ROI ZIP, so this pass measures it and writes a table of its
+     * own. The stale table is therefore replaced rather than simply gone: the
+     * assertion is that the old contents did not survive into the new file, which
+     * is what "deleted before measuring" is for. Writing a marker row and looking
+     * for its absence tests that directly; asserting the file is gone would only
+     * be true when the pass fails to measure, which is not this fixture.
+     */
+    private static void anImagesTableIsStillRecognisedByItsRealColumns() throws Exception {
+        Path input = Files.createTempDirectory("autoworm-measure-in-");
+        Path output = Files.createTempDirectory("autoworm-measure-out-");
+        writeTiff(input.resolve("aaa_good.tif"));
+        writeRoiZip(other(output).resolve("aaa_good_RoiSet.zip"));
+        Path ours = measurements(output).resolve("aaa_good_measurements.csv");
+        // The Label field carries the marker; nothing this pass writes can
+        // contain it, so finding it afterwards means the stale file survived.
+        String marker = "STALE_FROM_EARLIER_BATCH";
+        Files.write(ours, (STALE_IMAGE_HEADER + "\r\n1,2,3,4,5,6,7,0,aaa_good.tif," + marker
+                + ",10,2,3,0,1,1,1,pixel,none,Raw\r\n").getBytes(StandardCharsets.UTF_8));
+
+        try {
+            Auto_Worm_ROI.measureOutputFolder(input.toFile(), output.toFile(), null, null, false, false);
+        } catch (Exception expected) {
+            // Only the header check is under test here.
+        }
+
+        check(!read(ours).contains(marker),
+                "the table from the earlier batch survived into this one: " + read(ours));
+    }
+
     private static void aFileThatOnlyLooksLikeOurTableIsLeftAlone() throws Exception {
         Path input = Files.createTempDirectory("autoworm-measure-in-");
         Path output = Files.createTempDirectory("autoworm-measure-out-");

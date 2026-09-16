@@ -117,6 +117,19 @@ public class Auto_Worm_ROI implements PlugIn {
                     File inputFolder = new File(decode(values.getProperty("input_b64", "")));
                     File outputFolder = new File(decode(values.getProperty("output_b64", "")));
                     Set<String> finishedImages = successfulImages(values);
+                    // An explicitly empty list means the batch finished and produced
+                    // no ROI at all -- every image failed to segment. Measuring then
+                    // can only fail ("输出目录中没有可测量的 ROI ZIP"), and that
+                    // measurement error would be the only thing the user sees: the
+                    // message below, which names each failed image and why, is shown
+                    // only alongside a successful measurement. Reporting the real
+                    // reason is the whole point of the message, so this branch stops
+                    // before measuring. null is different: an older GUI sends no list
+                    // at all, and there the ROI ZIPs are still the only evidence.
+                    if (finishedImages != null && finishedImages.isEmpty()) {
+                        showBatchMessage(message, "本批没有可测量的图像");
+                        return Handled.UNMEASURED;
+                    }
                     boolean measured = false;
                     try {
                         ImagePlus current = WindowManager.getCurrentImage();
@@ -133,10 +146,7 @@ public class Auto_Worm_ROI implements PlugIn {
                     // A batch succeeds even when individual images failed: they were
                     // skipped, so they are simply absent from the table above. This
                     // message is the only place that says so.
-                    if (measured && !message.isEmpty()) {
-                        IJ.log("[Auto Worm] " + message);
-                        IJ.error("自动圈虫 " + VERSION + "：部分图像未处理", message);
-                    }
+                    if (measured) showBatchMessage(message, "部分图像未处理");
                     return measured ? Handled.MEASURED : Handled.UNMEASURED;
                 }
                 if ("cancelled".equals(status)) {
@@ -497,6 +507,21 @@ public class Auto_Worm_ROI implements PlugIn {
      *
      * The names are compared as they are: both sides list the same folder.
      */
+    /**
+     * Shows the GUI's own account of a batch, in the log and in front of the user.
+     *
+     * The message names the images that failed and the reason each one did. Fiji has
+     * no other way to learn it: those images are absent from the measurement table,
+     * and the GUI window has already been told it can close. A batch that measured
+     * nothing is exactly when this matters most, so the empty-message case is
+     * skipped rather than shown as a dialog with nothing in it.
+     */
+    private static void showBatchMessage(String message, String title) {
+        if (message.isEmpty()) return;
+        IJ.log("[Auto Worm] " + message);
+        IJ.error("自动圈虫 " + VERSION + "：" + title, message);
+    }
+
     private static Set<String> successfulImages(Properties values) {
         String count = values.getProperty("ok_count");
         if (count == null) return null;
@@ -579,12 +604,32 @@ public class Auto_Worm_ROI implements PlugIn {
      * than the whole header, so that a table written by an older build, with a
      * different column order, is still recognised as ours.
      */
+    /**
+     * True when the CSV header line carries exactly these column names.
+     *
+     * Whole fields are compared, not the header as a string. A substring test is
+     * the obvious way to write this and it is wrong in the direction that destroys
+     * data: the header "Image,RawCTCFValue,MeasurementBackendNotes,Comment" contains
+     * both "CTCF" and "MeasurementBackend" as substrings, so a substring test would
+     * delete a file we cannot prove is ours. Matching whole fields is what makes the
+     * header check mean what it says -- a table whose provenance we cannot establish
+     * is left where it is.
+     */
+    private static boolean hasColumns(String header, String... columns) {
+        Set<String> fields = new HashSet<>();
+        for (String field : header.split(",", -1)) fields.add(field.trim());
+        for (String column : columns) {
+            if (!fields.contains(column)) return false;
+        }
+        return true;
+    }
+
     private static void removeStaleCombinedTable(File measurementsDir) {
         File table = new File(measurementsDir, "ImageJ_measurements_all.csv");
         if (!table.isFile()) return;
         try (BufferedReader reader = Files.newBufferedReader(table.toPath(), StandardCharsets.UTF_8)) {
             String header = reader.readLine();
-            if (header == null || !header.contains("CTCF") || !header.contains("MeasurementBackend"))
+            if (header == null || !hasColumns(header, "CTCF", "MeasurementBackend"))
                 return;
         } catch (IOException unreadable) {
             return;
@@ -614,7 +659,7 @@ public class Auto_Worm_ROI implements PlugIn {
         if (!table.isFile()) return;
         try (BufferedReader reader = Files.newBufferedReader(table.toPath(), StandardCharsets.UTF_8)) {
             String header = reader.readLine();
-            if (header == null || !header.contains("CTCF") || !header.contains("MeasurementBackend"))
+            if (header == null || !hasColumns(header, "CTCF", "MeasurementBackend"))
                 return;
         } catch (IOException unreadable) {
             return;

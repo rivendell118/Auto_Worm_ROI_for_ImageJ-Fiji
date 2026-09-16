@@ -757,11 +757,42 @@ def _clear_runs(flags):
     return list(zip(edges[::2].tolist(), (edges[1::2] - 1).tolist()))
 
 
+def _no_rectangle_reaches(region, min_area):
+    """区域内确定没有面积达到 min_area 的空矩形时返回 True。
+
+    对每一列求「最长的连续空行段」，取所有列的最大值 tall。任何空矩形的高都不可能
+    超过 tall（每一列都得自己空出那么多行），所以 area <= 宽 × tall 是硬上界；连
+    宽 × tall 都不够 min_area 时，这一条带确实不必再搜。
+
+    早先这里写的是「空列数 × 空行数」，看着更简单，但一条横穿整幅图的障碍会让空行数
+    变成 0，上界跟着变成 0——而障碍上方明明还留着大片干净区域。那条上界虽然成立，
+    却粗到会把该救回来的图挡在门外。
+
+    只在算完每列的连续空行段之后才判断，这一步是 O(区域像素)；建直方图的代价已经在
+    `_largest_clear_rectangle_exact` 里付过了，所以这里不额外增加复杂度量级。
+    """
+    clear = ~np.asarray(region, dtype=bool)
+    if region.size == 0:
+        return True
+    tallest = 0
+    for column in range(clear.shape[1]):
+        for run in _clear_runs(clear[:, column]):
+            tallest = max(tallest, run[1] - run[0] + 1)
+            if tallest >= min_area:  # 宽至少 1，再算下去也不可能更小
+                return False
+    return clear.shape[1] * tallest < min_area
+
+
 def _largest_clear_rectangle(blocked, x0, x1, y0, y1):
     """区域内面积最大的全空矩形，返回 (面积, x0, y0, x1, y1)，没有则 None。
 
     先把区域按「整列都空」切成若干连续列段，再在每段里找整行都空的连续行段：这样得到
     的矩形一定不含任何被挡下的像素，可以直接当作统计区域。
+
+    注意这只是**一部分**空矩形，不是全部：某一列只要有一个被挡的像素，整列就出局，
+    于是横穿条带的障碍上方或下方明明还留着一块干净矩形，这里也找不到。所以它只是快速
+    路径，找不出合格结果时由 `_largest_clear_rectangle_exact` 兜底，两个函数返回同一种
+    四元组。
     """
     region = blocked[y0:y1 + 1, x0:x1 + 1]
     best = None
@@ -772,6 +803,43 @@ def _largest_clear_rectangle(blocked, x0, x1, y0, y1):
             if best is None or area > best[0]:
                 best = (area, x0 + column_start, y0 + row_start,
                         x0 + column_end, y0 + row_end)
+    return best
+
+
+def _largest_clear_rectangle_exact(blocked, x0, x1, y0, y1):
+    """区域内面积最大的全空矩形，返回 (面积, x0, y0, x1, y1)，没有则 None。
+
+    同样是「面积最大的全空矩形」，但这次真的是：逐行累加每列连续空了几行，把这一行
+    的高度当成直方图，用单调栈求直方图里的最大矩形。这是标准解法，能找出横穿条带的
+    障碍**上方或下方**留下的那块干净矩形，而那正是快速路径漏掉的情形。
+
+    比 `_largest_clear_rectangle` 慢（每行都要过一遍栈），所以只在快速路径拿不出合格
+    面积时才跑，见 `background_mask_and_polygon`。
+    """
+    region = np.asarray(blocked[y0:y1 + 1, x0:x1 + 1])
+    if region.size == 0:
+        return None
+    clear = ~region
+    width = clear.shape[1]
+    heights = np.zeros(width, dtype=np.int64)
+    best = None
+    for row in range(clear.shape[0]):
+        heights = np.where(clear[row], heights + 1, 0)
+        # 单调栈求直方图最大矩形：栈里存 (列下标, 高度)，高度递增；遇到更矮的就把
+        # 栈顶弹出来结算，结算宽度是「到当前列为止」。
+        stack = []
+        for column in range(width + 1):
+            height = int(heights[column]) if column < width else 0
+            start = column
+            while stack and stack[-1][1] >= height:
+                left, popped = stack.pop()
+                area = popped * (column - left)
+                if best is None or area > best[0]:
+                    best = (area, x0 + left, y0 + row - popped + 1,
+                            x0 + column - 1, y0 + row)
+                start = left
+            if height:
+                stack.append((start, height))
     return best
 
 
@@ -809,17 +877,30 @@ def background_mask_and_polygon(instances, forbidden_mask=None):
         (max(2, left), min(width - 3, right), max(2, margin_y), top - margin_y),
         (max(2, left), min(width - 3, right), bottom + margin_y, height - 3),
     ]
+    min_area = max(BACKGROUND_MIN_AREA_PIXELS, int(blocked.size * BACKGROUND_MIN_AREA_FRACTION))
+    strips = [(sx0, sx1, sy0, sy1) for sx0, sx1, sy0, sy1 in candidates
+              if sx1 >= sx0 and sy1 >= sy0]
     best = None
-    for strip_x0, strip_x1, strip_y0, strip_y1 in candidates:
-        if strip_x1 < strip_x0 or strip_y1 < strip_y0:
-            continue
+    for strip_x0, strip_x1, strip_y0, strip_y1 in strips:
         found = _largest_clear_rectangle(blocked, strip_x0, strip_x1, strip_y0, strip_y1)
         if found is not None and (best is None or found[0] > best[0]):
             best = found
+    # 快速路径只找「整列都空」的矩形，横穿条带的障碍上方留下的那块干净区域它看不见，
+    # 于是明明还有合格背景却报「找不到干净背景区域」，整张图被判失败。找不到合格面积
+    # 时再跑一次精确搜索兜底——能过的图照样走原路，被误判的图这才有机会救回来。
+    if best is None or best[0] < min_area:
+        for strip_x0, strip_x1, strip_y0, strip_y1 in strips:
+            region = blocked[strip_y0:strip_y1 + 1, strip_x0:strip_x1 + 1]
+            # 确定达不到 min_area 就不必跑了：精确搜索每行过一次栈，比快速路径慢。
+            if _no_rectangle_reaches(region, min_area):
+                continue
+            found = _largest_clear_rectangle_exact(blocked, strip_x0, strip_x1, strip_y0, strip_y1)
+            if found is not None and (best is None or found[0] > best[0]):
+                best = found
     if best is None:
         return None, None
     area, x0, y0, x1, y1 = best
-    if area < max(BACKGROUND_MIN_AREA_PIXELS, int(blocked.size * BACKGROUND_MIN_AREA_FRACTION)):
+    if area < min_area:
         return None, None
     mask = np.zeros(blocked.shape, dtype=bool)
     mask[y0:y1 + 1, x0:x1 + 1] = True

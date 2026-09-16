@@ -9,18 +9,28 @@ to be unpacked into the Fiji root, where ImageJ-win64.exe is:
     plugins/AutoWormImageJ/{models,_internal,licenses}/...
     README_0.4.2_ImageJ_Java8.md  CHANGELOG_0.4.2.md  VALIDATION_0.4.2.md  LICENSE
 
-Three checks run before anything is packed, because each one covers a mistake
+Four checks run before anything is packed, because each one covers a mistake
 that produces a zip which looks completely normal:
 
-  * the version string agrees in all three places that carry it, so a partial
-    bump cannot ship a jar that announces one version and a summary CSV that
-    records another;
+  * the version string agrees in every place that carries it, so a partial bump
+    cannot ship a jar that announces one version and a summary CSV that records
+    another;
   * every module the EXE shares with src/ is the same code as src/ -- compares
     the packaged code objects against freshly compiled ones, module by module,
     rather than searching for a marker string somebody has to remember to add;
+  * the jar holds the current Java source, compiled the way the build compiles
+    it, and its embedded plugins.config is the current one;
   * when --previous-exe is given, that older build must NOT match the current
     source. Without that half, a matching comparison proves nothing about
     whether the rebuild did anything at all.
+
+The jar check is separate from the EXE check because nothing else looks at the
+jar. Editing plugin_src/*.java and running only the PyInstaller half of the
+build is an ordinary way to work -- the EXE check passes, every Python test
+passes, and the zip ships a jar built from Java that no longer exists. The
+version check used to read plugin_src/plugins.config, which is the file that
+would be edited by hand and is present whether or not the jar was rebuilt, so
+it could not catch that either; it now reads the copy inside the jar.
 
 Run it with the build interpreter, after build_0.4.2.bat:
 
@@ -34,7 +44,10 @@ import hashlib
 import marshal
 import re
 import shutil
+import struct
+import subprocess
 import sys
+import tempfile
 import types
 import zipfile
 from pathlib import Path
@@ -43,8 +56,29 @@ ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 GUI_DIR = DIST / "AutoWormImageJ"
 SRC = ROOT / "src"
-PLUGIN_CONFIG = ROOT / "plugin_src" / "plugins.config"
+PLUGIN_SRC = ROOT / "plugin_src"
+PLUGIN_CONFIG = PLUGIN_SRC / "plugins.config"
+IJ_JAR = ROOT / "lib" / "ij.jar"
 RELEASE_ROOT = ROOT / "release"
+
+# Exactly the arguments build_0.4.2.bat compiles the plug-in with. They are
+# repeated here rather than shared, because the comparison is only meaningful
+# when the release script recompiles the same way the build did -- a different
+# --release target changes the emitted bytecode and the check would then report
+# a difference that is the script's own doing. If the build script's javac line
+# changes, this has to change with it, and both halves are in one place to see.
+JAVAC_FLAGS = ("--release", "8", "-encoding", "UTF-8")
+
+# Class-file attributes that cannot change what the plug-in does: they describe
+# where the code came from or help a verifier, and two compilations of the same
+# source may differ in them without the program differing at all. Dropped so the
+# comparison is over structure and instructions only.
+JAR_INFO_ATTRS = frozenset((
+    "SourceFile", "LineNumberTable", "LocalVariableTable",
+    "LocalVariableTypeTable", "StackMapTable", "StackMap",
+    "RuntimeVisibleTypeAnnotations", "RuntimeInvisibleTypeAnnotations",
+    "MethodParameters",
+))
 
 # Carried in the archive name and the readme file names.
 VERSION_PATTERN = re.compile(r'"Auto Worm ROI ([0-9][^"]*)"')
@@ -69,13 +103,29 @@ def sha256_file(path):
 def declared_version():
     """The version ImageJ shows in its menu, which is the one users quote.
 
-    Taken from plugins.config rather than repeated here: a release script that
-    states the version itself is one more place to forget to bump.
+    Read out of the jar, which is what ships and what ImageJ actually parses.
+    Reading plugin_src/plugins.config instead answers a different question -- it
+    says what the version would be if the jar were rebuilt -- and the answer is
+    the same whether or not it was, so a stale jar carrying an old menu string
+    sailed through. Only when the jar is not built yet does this fall back to
+    the source file, where the version is at least what the next build will
+    carry, and that case is reported as a missing artifact before anything is
+    packed.
     """
-    text = PLUGIN_CONFIG.read_text(encoding="ascii")
+    if (DIST / JAR_NAME).is_file():
+        with zipfile.ZipFile(DIST / JAR_NAME) as archive:
+            try:
+                text = archive.read("plugins.config").decode("ascii")
+            except KeyError:
+                raise SystemExit("%s has no plugins.config inside it -- it is "
+                                 "not the plug-in jar" % (DIST / JAR_NAME))
+        origin = "%s!plugins.config" % JAR_NAME
+    else:
+        text = PLUGIN_CONFIG.read_text(encoding="ascii")
+        origin = str(PLUGIN_CONFIG)
     match = VERSION_PATTERN.search(text)
     if not match:
-        raise SystemExit("no version found in %s" % PLUGIN_CONFIG)
+        raise SystemExit("no version found in %s" % origin)
     # ImageJ menu strings spell the beta marker with a space; the code and the
     # zip name use a hyphen.
     return match.group(1).strip().replace(" ", "-")
@@ -249,6 +299,241 @@ def report_comparison(label, exe, verbose):
     return matching, differing, missing
 
 
+class ClassReader(object):
+    """Just enough class-file parsing to walk one, attribute by attribute.
+
+    A class file is a flat sequence of length-prefixed structures, so reading
+    past the part being compared has to be exact -- one wrong length and every
+    later field is read out of the middle of something else. That is the whole
+    reason this exists instead of a regex over the bytes.
+
+    Anything not understood raises, and callers turn that into "cannot compare"
+    rather than "matches": a parser that quietly skipped a structure it did not
+    recognise would be able to call two different classes equal, which is the
+    one failure this check must not have.
+    """
+
+    def __init__(self, data):
+        self.data = data
+        self.pos = 0
+
+    def u1(self):
+        value = self.data[self.pos]
+        self.pos += 1
+        return value
+
+    def u2(self):
+        value = struct.unpack_from(">H", self.data, self.pos)[0]
+        self.pos += 2
+        return value
+
+    def u4(self):
+        value = struct.unpack_from(">I", self.data, self.pos)[0]
+        self.pos += 4
+        return value
+
+    def raw(self, count):
+        if self.pos + count > len(self.data):
+            raise ValueError("class file ends in the middle of a structure")
+        chunk = self.data[self.pos:self.pos + count]
+        self.pos += count
+        return chunk
+
+    def skip_attributes(self):
+        for _ in range(self.u2()):
+            self.u2()                 # name index
+            self.raw(self.u4())       # length + body
+
+
+def class_surface(data):
+    """A comparable rendering of a class file, without the source metadata.
+
+    Everything that decides what the class does is kept: the constant pool, the
+    access flags, the interfaces, the fields, and every method with its
+    descriptor, its flags and its bytecode. Everything that only records where
+    the code came from (see JAR_INFO_ATTRS) is dropped, so a comment, a blank
+    line or a local variable name does not count as a difference while a changed
+    string literal, a changed number or a changed branch does.
+    """
+    reader = ClassReader(data)
+    if reader.u4() != 0xCAFEBABE:
+        raise ValueError("not a class file")
+    out = []
+    reader.u2()                       # minor version
+    reader.u2()                       # major version -- the --release target
+
+    pool = []
+    # Entries are numbered from 1, and a long or a double occupies two numbers
+    # -- the second is unusable and has no bytes of its own. Pool indices
+    # elsewhere count those two slots, so the extra entry is appended to keep
+    # every later index lining up with the number the class file used.
+    remaining = reader.u2() - 1
+    while remaining > 0:
+        tag = reader.u1()
+        remaining -= 1
+        if tag == 1:
+            length = reader.u2()
+            # Decoded so a changed literal reads as a changed literal rather
+            # than as a changed length. Modified UTF-8 only differs from UTF-8
+            # for characters that cannot appear in this source.
+            pool.append(reader.raw(length).decode("utf-8", "replace"))
+        elif tag in (3, 4):
+            pool.append(reader.raw(4).hex())
+        elif tag in (5, 6):
+            pool.append(reader.raw(8).hex())
+            pool.append("<two slots>")
+            remaining -= 1
+        elif tag in (7, 8, 16, 19, 20):
+            pool.append(reader.u2())
+        elif tag in (9, 10, 11, 12, 17, 18):
+            pool.append((reader.u2(), reader.u2()))
+        elif tag == 15:
+            pool.append((reader.u1(), reader.u2()))
+        else:
+            raise ValueError("unknown constant pool tag %d" % tag)
+    out.append("pool " + repr(pool))
+
+    reader.u2()                       # access flags
+    reader.u2()                       # this class
+    reader.u2()                       # super class
+    out.append("interfaces " + repr([reader.u2() for _ in range(reader.u2())]))
+    # Fields carry no bytecode, so names and descriptors are the whole of them.
+    # Four reads per field: access flags, name index, descriptor index, and the
+    # count of attributes -- which is zero for a field and still has to be
+    # consumed. Reading one fewer leaves two bytes unconsumed per field, and the
+    # reader then walks into the middle of the next field.
+    for _ in range(reader.u2()):
+        reader.u2()                   # access flags
+        name = pool[reader.u2() - 1]
+        descriptor = pool[reader.u2() - 1]
+        out.append("field %r %r" % (name, descriptor))
+        reader.skip_attributes()
+    for _ in range(reader.u2()):
+        reader.u2()                   # access flags
+        name = pool[reader.u2() - 1]
+        descriptor = pool[reader.u2() - 1]
+        out.append("method %r %r" % (name, descriptor))
+        for _ in range(reader.u2()):
+            attribute = pool[reader.u2() - 1]
+            body_length = reader.u4()
+            if attribute == "Code":
+                body = ClassReader(reader.raw(body_length))
+                body.u2()             # max stack
+                body.u2()             # max locals
+                out.append("  bytecode " + body.raw(body.u4()).hex())
+                # Exception handlers are branches, so they are code.
+                out.append("  handlers " + repr(
+                    [(body.u2(), body.u2(), body.u2(), body.u2() or None)
+                     for _ in range(body.u2())]))
+                body.skip_attributes()
+                if body.pos != len(body.data):
+                    raise ValueError("trailing bytes in Code")
+            elif attribute in JAR_INFO_ATTRS:
+                reader.raw(body_length)
+            else:
+                out.append("  %s %s" % (attribute, reader.raw(body_length).hex()))
+    for _ in range(reader.u2()):
+        attribute = pool[reader.u2() - 1]
+        body_length = reader.u4()
+        if attribute in JAR_INFO_ATTRS:
+            reader.raw(body_length)
+        else:
+            out.append("class %s %s" % (attribute, reader.raw(body_length).hex()))
+    if reader.pos != len(data):
+        raise ValueError("trailing bytes after the class")
+    return out
+
+
+def jar_entries():
+    """{name inside the jar: raw bytes} for everything the jar carries."""
+    with zipfile.ZipFile(DIST / JAR_NAME) as archive:
+        return {info.filename: archive.read(info.filename)
+                for info in archive.infolist() if not info.is_dir()}
+
+
+def compile_plugin_to(destination):
+    """Compile plugin_src/*.java the way the build compiles it."""
+    units = sorted(str(path) for path in PLUGIN_SRC.glob("*.java"))
+    if not units:
+        raise SystemExit("no Java sources under %s" % PLUGIN_SRC)
+    command = ["javac"] + list(JAVAC_FLAGS) + [
+        "-cp", str(IJ_JAR), "-d", str(destination)] + units
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise SystemExit("javac failed while checking the jar:\n%s%s"
+                         % (completed.stdout, completed.stderr))
+    return sorted(path.name for path in destination.glob("*.class"))
+
+
+def compare_jar_to_source():
+    """Whether the jar is the current Java source, compiled as the build does.
+
+    Returns (problems, notes). Compiles into a throwaway directory rather than
+    build/plugin_classes, so running the release check does not touch the build
+    tree it is inspecting.
+    """
+    problems, notes = [], []
+    entries = jar_entries()
+
+    embedded = entries.get("plugins.config")
+    if embedded is None:
+        problems.append("the jar has no plugins.config in it")
+    elif embedded != PLUGIN_CONFIG.read_bytes():
+        # Compared as bytes: this file only goes in by copy, so any difference
+        # at all means the jar is not carrying the menu the source declares.
+        problems.append("plugins.config inside the jar differs from "
+                        "plugin_src/plugins.config")
+
+    with tempfile.TemporaryDirectory() as staging:
+        compiled = compile_plugin_to(Path(staging))
+        in_jar = sorted(name for name in entries if name.endswith(".class"))
+        for name in sorted(set(in_jar) - set(compiled)):
+            problems.append("%s is in the jar but no longer compiled from "
+                            "plugin_src/" % name)
+        for name in sorted(set(compiled) - set(in_jar)):
+            problems.append("%s compiles from plugin_src/ but is not in the "
+                            "jar" % name)
+        for name in sorted(set(compiled) & set(in_jar)):
+            try:
+                fresh = class_surface((Path(staging) / name).read_bytes())
+                shipped = class_surface(entries[name])
+            except ValueError as error:
+                problems.append("%s could not be compared (%s)" % (name, error))
+                continue
+            if fresh == shipped:
+                notes.append(name)
+                continue
+            problems.append("%s was compiled from different source than the "
+                            "jar holds" % name)
+            # The first line that differs, for a report that says what changed
+            # rather than only that something did.
+            for index, (a, b) in enumerate(zip(fresh, shipped)):
+                if a != b:
+                    problems.append("    first difference at %s piece %d: "
+                                    "source %r, jar %r"
+                                    % (name, index, a[:120], b[:120]))
+                    break
+            else:
+                problems.append("    the two have different lengths: %d vs %d "
+                                "pieces" % (len(fresh), len(shipped)))
+    return problems, notes
+
+
+def report_jar_comparison(verbose):
+    problems, notes = compare_jar_to_source()
+    print("Checking that the jar is the current Java source.")
+    print("(plugin_src/*.java is recompiled the way build_0.4.2.bat compiles")
+    print(" it, and every class is compared with the one in the jar: constant")
+    print(" pool, methods and bytecode. Line numbers, local variable names and")
+    print(" other source metadata do not count.)")
+    print("jar: %d class(es) match plugin_src/" % len(notes))
+    if verbose and notes:
+        print("    match: %s" % ", ".join(notes))
+    for line in problems:
+        print(line, file=sys.stderr)
+    return problems
+
+
 def sync_docs_to_dist(docs):
     """Refresh the doc copies under dist/.
 
@@ -313,6 +598,9 @@ def main():
                              "mostly DLLs, so the saving is modest.")
     parser.add_argument("--skip-exe-check", action="store_true",
                         help="pack without comparing the EXE against src/")
+    parser.add_argument("--skip-jar-check", action="store_true",
+                        help="pack without comparing the jar against "
+                             "plugin_src/ (needs a JDK on PATH)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -334,6 +622,23 @@ def main():
         for line in problems:
             print("ERROR: " + line, file=sys.stderr)
         return 1
+
+    if not args.skip_jar_check:
+        if shutil.which("javac") is None:
+            # Not skipped quietly: the check is the only thing that looks at the
+            # jar, and the JDK is on the build machine that produces it.
+            print("ERROR: javac is not on PATH, so the jar cannot be compared "
+                  "with plugin_src/. Run this where the build runs, or pass "
+                  "--skip-jar-check to pack anyway.", file=sys.stderr)
+            return 1
+        print()
+        jar_problems = report_jar_comparison(verbose)
+        if jar_problems:
+            print(file=sys.stderr)
+            print("ERROR: the jar does not match plugin_src/. Rebuild with "
+                  "build_0.4.2.bat before releasing: the zip would ship Java "
+                  "code that is no longer in the sources.", file=sys.stderr)
+            return 1
 
     exe = GUI_DIR / "AutoWormGUI.exe"
     if not args.skip_exe_check:

@@ -1665,6 +1665,17 @@ class WormRoiGui:
                       str(config["checkpoint"]), str(config["tip_checkpoint"]))
         source_stems = {p.stem.lower() for p in tiffs}
         batch_kwargs = dict(
+            # The batch is given the list this pass was checked against, rather
+            # than left to scan the folder again. Left to itself it would glob the
+            # directory a second time and pick up anything that arrived in between
+            # -- an acquisition or sync still writing into the folder. That image
+            # would be segmented, get a ROI ZIP and a QC image, and appear in
+            # batch_summary.csv as a success, but it is not in the completed list
+            # built below from this same snapshot, so ImageJ would never measure
+            # it. ROI present, summary green, no fluorescence: the one outcome
+            # nobody can notice from the output. Passing the list keeps the
+            # pre-check, the batch, and the completion manifest on one snapshot.
+            input_paths=[str(path) for path in sorted_tiffs],
             standard_count=worm_count,
             allowed_count_min=worm_count,
             allowed_count_max=worm_count,

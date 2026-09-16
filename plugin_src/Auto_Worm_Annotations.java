@@ -37,15 +37,71 @@ public class Auto_Worm_Annotations implements PlugIn {
             if (heads.isEmpty() && boundaries.isEmpty() && exclusions.isEmpty())
                 throw new IllegalArgumentException("没有找到 head_ / boundary_ / exclude_ 标注。\n" + instructions());
 
+            // Checked before anything is written, and checked here rather than
+            // inside the serializer: a ROI the serializer cannot use used to be
+            // dropped with a bare `continue`, so the file simply did not contain
+            // it while the message below counted it from the list it had just
+            // been classified into. The user was told the annotation was saved
+            // and it was not. A name that was accepted and then silently
+            // discarded is worse than a refusal, so an unusable ROI stops the
+            // save and is named.
+            List<String> unusable = unusableAnnotations(heads, boundaries, exclusions);
+            if (!unusable.isEmpty())
+                throw new IllegalArgumentException(
+                        "以下标注的 ROI 类型或点数不符合要求，未保存任何内容：\n  "
+                                + String.join("\n  ", unusable) + "\n\n" + instructions());
+
             String json = buildJson(image.getWidth(), image.getHeight(), heads, boundaries, exclusions);
             Path sidecar = new File(info.directory, info.fileName + ".autoworm.json").toPath();
             Files.write(sidecar, json.getBytes(StandardCharsets.UTF_8));
+            // Counted from the same lists the serializer was given, so the
+            // numbers cannot disagree with the file that was just written.
             IJ.showMessage("自动圈虫标注", "已保存：" + sidecar + "\n\n" +
                     "头向 " + heads.size() + "，分界线 " + boundaries.size() +
                     "，排除区 " + exclusions.size());
         } catch (Exception error) {
             IJ.error("自动圈虫标注", error.getMessage() == null ? error.toString() : error.getMessage());
         }
+    }
+
+    /**
+     * Names every annotation the serializer would have skipped, one per line.
+     *
+     * These are the same conditions buildJson applies; they live here so that
+     * refusing and writing can never disagree about what is acceptable.
+     */
+    private static List<String> unusableAnnotations(List<Roi> heads, List<Roi> boundaries,
+                                                    List<Roi> exclusions) {
+        List<String> problems = new ArrayList<>();
+        for (Roi roi : heads) {
+            if (!(roi instanceof Line))
+                problems.add(describe(roi) + "：头向必须是直线或箭头");
+            else {
+                FloatPolygon points = ((Line) roi).getFloatPoints();
+                if (points == null || points.npoints < 2)
+                    problems.add(describe(roi) + "：头向至少要有两个点");
+            }
+        }
+        for (Roi roi : boundaries) {
+            FloatPolygon polygon = roi.getFloatPolygon();
+            if (polygon == null || polygon.npoints < 2)
+                problems.add(describe(roi) + "：分界线至少要有两个点");
+        }
+        for (Roi roi : exclusions) {
+            if (!roi.isArea()) {
+                problems.add(describe(roi) + "：排除区必须是闭合的面积 ROI");
+                continue;
+            }
+            FloatPolygon polygon = roi.getFloatPolygon();
+            if (polygon == null || polygon.npoints < 3)
+                problems.add(describe(roi) + "：排除区至少要有三个点");
+        }
+        return problems;
+    }
+
+    private static String describe(Roi roi) {
+        String name = roi.getName();
+        return name == null || name.isEmpty() ? "(未命名)" : name;
     }
 
     private static String instructions() {

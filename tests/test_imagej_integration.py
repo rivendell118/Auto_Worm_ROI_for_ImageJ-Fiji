@@ -1389,5 +1389,101 @@ class SuiteIntegrityTests(unittest.TestCase):
                 self.assertEqual(path.parent, (ROOT / "src").resolve())
 
 
+class InputSnapshotTests(unittest.TestCase):
+    """The batch must process the list it was given, not re-scan the folder.
+
+    The GUI checks the folder, shows the result, and keeps that list as the
+    completion manifest it reports to ImageJ. If the batch is left to glob the
+    directory a second time, an image that arrives in between -- an acquisition
+    or a sync still writing into the folder -- gets segmented and exported, but
+    is missing from the manifest, so ImageJ never measures it. The ROI ZIP and
+    the QC image are both there and batch_summary.csv calls it a success, which
+    is exactly why nobody would notice the missing fluorescence.
+
+    The engine is stubbed: globbing is decided before any model runs, so a real
+    checkpoint would add nothing here.
+    """
+
+    def _stub_image_engine(self, on_process=None):
+        """Patch enough of the pipeline to run a batch without weights."""
+        def fake_process_image(path, *args, **kwargs):
+            name = os.path.basename(str(path))
+            if on_process is not None:
+                on_process(name)
+            return [name, 10, 10, "PASS"] + [""] * 25
+
+        return patch("batch_worm_roi.process_image", side_effect=fake_process_image)
+
+    def _run(self, folder, output, input_paths, on_process=None):
+        for name in ("worm.pt", "tip.pt"):
+            (folder / name).write_bytes(b"stub checkpoint")
+        with patch("batch_worm_roi.torch.load", return_value={"model_state": {}}), \
+                patch("batch_worm_roi.WormUNet"), \
+                self._stub_image_engine(on_process):
+            return run_gui_batch(
+                str(folder), str(output), str(folder / "worm.pt"),
+                str(folder / "tip.pt"), disable_tip_refinement=True,
+                input_paths=input_paths)
+
+    def test_an_image_added_mid_batch_is_not_processed_when_the_list_is_given(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            for name in ("a.tif", "b.tif"):
+                Image.fromarray(np.zeros((8, 8), np.uint16)).save(folder / name)
+            output = folder / "out"
+            snapshot = sorted(str(path) for path in folder.glob("*.tif"))
+
+            def arrive_late(name):
+                # A file lands in the folder while the batch is running.
+                if not (folder / "late.tif").exists():
+                    Image.fromarray(np.zeros((8, 8), np.uint16)).save(folder / "late.tif")
+
+            processed = []
+
+            def on_process(name):
+                processed.append(name)
+                arrive_late(name)
+
+            results = self._run(folder, output, snapshot, on_process=on_process)
+
+            self.assertEqual(sorted(processed), ["a.tif", "b.tif"],
+                             "the batch processed an image that was not in the list "
+                             "it was given; the GUI has no name to report to ImageJ "
+                             "for it, so it would never be measured")
+            self.assertNotIn("late.tif", [row[0] for row in results])
+
+    def test_the_scan_happens_once_before_the_loop(self):
+        """Why the window is the pre-check, not each image.
+
+        run_gui_batch globs the folder once and keeps that list, so a file that
+        arrives while image 3 of 10 is being processed is not picked up by this
+        batch. The gap that matters is therefore earlier: between the GUI's
+        pre-check and this call, which is where the pre-flight checks run. This
+        test pins the scan-once behaviour so that a future change to per-image
+        rescanning does not silently reopen the race in a new place.
+        """
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            for name in ("a.tif", "b.tif"):
+                Image.fromarray(np.zeros((8, 8), np.uint16)).save(folder / name)
+            output = folder / "out"
+
+            def arrive_late(name):
+                if name == "a.tif" and not (folder / "late.tif").exists():
+                    Image.fromarray(np.zeros((8, 8), np.uint16)).save(folder / "late.tif")
+
+            processed = []
+
+            def on_process(name):
+                processed.append(name)
+                arrive_late(name)
+
+            results = self._run(folder, output, None, on_process=on_process)
+
+            self.assertEqual(sorted(processed), ["a.tif", "b.tif"])
+            # The file really did land, so the assertion above is not vacuous.
+            self.assertTrue((folder / "late.tif").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
