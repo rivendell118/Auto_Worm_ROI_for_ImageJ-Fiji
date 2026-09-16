@@ -19,7 +19,7 @@ __pycache__/
 # 两者都是本机状态、体积大且可从 requirements 重建，不入库。
 .venv-llm/
 
-# --- 一次性探针的编译产物（review_041_quant/ 里审查用的 .java 会生成同名 .class）---
+# --- 一次性探针的编译产物（审查用的 .java 会生成同名 .class）---
 *.class
 
 # --- 运行期残留 ---
@@ -42,11 +42,15 @@ tests/preview/
 # --- 0.4.2 的训练集与训练产物（由 src/build_supplement_dataset.py 与 src/train_*.py 重建）---
 training/
 
-# --- 复审/探针的工作目录（一次性的：探针、夹具、日志、桥接残留、真实样例副本）---
-# 只收三份审查报告本身，它们是 CHANGELOG 与 VALIDATION 引用的证据。
-review_041_quant/*
-!review_041_quant/*.txt
-!review_041_quant/*.md
+# --- 审查材料 ---
+# review\ 只收**报告本身**（CHANGELOG 与 VALIDATION 引用的证据）。当年那个工作目录
+# review_041_quant\ 在 2026-09-16 已整个删除、三份报告移进 review\，但审查往往会在
+# 仓库旁边留下一堆一次性的东西——探针 .java/.py、夹具、日志、桥接残留、真实样例副本。
+# 若再次在 review\ 里跑审查，这些一律不入库；**例外是 .md/.txt 报告**，否则新报告会被
+# 这条规则连同垃圾一起吞掉。
+review/*
+!review/*.md
+!review/*.txt
 
 # --- 本机工具状态 ---
 .vscode/

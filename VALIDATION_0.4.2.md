@@ -28,8 +28,9 @@
 - 端到端回归（46 张真实图，走完整条流水线）：**6 张虫数变化，六张全是改对，零变差**。
 - 低清指纹判据实测：新旧两版低清权重都判为低清，两版高清权重都不命中。
 - 权重自带的验证指标与训练日志逐一核对一致；`image_size` 均为 768、`boundary_radius` 均为 6。
-- Java 回归测试：`tests\AutoWormMeasurementTest.java` **14/14 通过**（0.4.1 时 12 条，本次
-  新增「列序」与「测量文件夹不存在时自动建好」两条）。
+- Java 回归测试：`tests\AutoWormMeasurementTest.java` **16/16 通过**（0.4.1 时 12 条，本次
+  新增「列序」与「测量文件夹不存在时自动建好」两条，其后外部审查那一轮又补了两条：
+  子串表头不得被删、真表头仍要认出来）。
 - 发布文件已重建：`dist/Auto_Worm_ROI.jar`、`dist/AutoWormImageJ/AutoWormGUI.exe`，
   `dist/AutoWormImageJ/models/` 与仓库 `models/` 逐文件 SHA256 相同。
 
@@ -332,10 +333,10 @@ Area,Mean,Min,Max,IntDen,Median,RawIntDen,,Label,BackgroundCorrectedMean,CTCF,Ty
 ## 发布文件
 
 ```
-dist/Auto_Worm_ROI.jar                            23534 字节
-  sha256 48b84e984236d0d93c70d92d285edd83a96ee17bd4b7a0ada67bfe5c9a288a9a
-dist/AutoWormImageJ/AutoWormGUI.exe               47960362 字节
-  sha256 498b4d05354ce4d824189674e06f8a93a726c088f3b41a2c8ba8bca10b971d98
+dist/Auto_Worm_ROI.jar                            24422 字节
+  sha256 d6fcf8324f929794cb070935b5884bf7e5bca9f757641e898fa70e1661bef85c
+dist/AutoWormImageJ/AutoWormGUI.exe               47962761 字节
+  sha256 c6022ae048af510e7c8075293899abbcc77ce7db72e4fe5e6cded2ada15891e4
 
 models/0.1.1/worm.pt  6315cfaf21594c93ebd4c4963c7929b4561e9a049b5656703c4bd5554bc1160e
 models/0.1.1/tip.pt   4c9443010b5730c6f87c84c07c446303ffd3ea6b4a37d589980f74ffff4e046a
@@ -350,11 +351,46 @@ models/0.2.1/tip.pt   6dd86bfc467d58c2471cc61691d1bbd1bf607555f53a9e80e907e5879b
 `batch_worm_roi.py` 与 `worm_roi_gui.py`。发布包由 `make_release.py` 在对
 `dist\` 与实盘 `src\` 做 `code_surface` 指纹比对之后打出，EXE 若与源码不符会直接失败。
 
+其后又因外部综合审查的六条修复**再重建过一次**，上表是那一次之后的产物（jar
+23534 → 24422 字节、EXE 47960362 → 47962761 字节）。六条见下一节。这一次 `make_release.py`
+额外核对了 **jar 与 `plugin_src\*.java` 的一致性**——这是以前没有的闸门，也是上面那两个
+哈希值得重新对一遍的原因：**旧包里那几份 class 与源码已经对不上了**。
+
+> **jar 的 SHA256 只对得上「这一个文件」。** `jar` 会把每个 class 的打包时刻写进条目头，
+> 所以同样的源码重编一次、哈希就变一次——上面这个值是 2026-09-16 20:12 那次构建的。
+> 要判断手上这个 jar 是不是这一版，**别看哈希，看内容**：跑 `make_release.py`（它会重编
+> `plugin_src\*.java` 与 jar 里的 class 逐个比对，源码元数据不算差异），或者直接
+> 解压 `plugins.config` 看版本。EXE 同理，PyInstaller 产物每次构建也不同。
+
 构建中撞到一处真实问题并已修复：`build_0.4.2.bat` 第 1 步直接往 `dist\Auto_Worm_ROI.jar`
 写 jar，而 0.4.2 的树里**没有 `dist\`**（被 `.gitignore` 排除，从 0.4.1 复制时没带过来），
 `jar` 报的是 `java.nio.file.NoSuchFileException: …\Temp\Auto_Worm_ROI.jar… -> dist\Auto_Worm_ROI.jar`
 ——一条看不出所以然的 Java 堆栈。脚本现已加 `if not exist "dist" mkdir "dist"`，
 位置与建 `build\plugin_classes` 的那行一致。
+
+## 外部综合审查六条修复
+
+这一版打出第一份 zip 之后，另做了一轮独立综合审查，提出并修掉六条。**六条都不改变测量
+数值**：动的是「哪些数据被算错/被误删/被漏判」和「脚本有没有守住门」。逐条的现场、踩过的
+坑与判别性验证记在 `AGENT.md` 第 8.8 节，这里只列对用户有影响的结论：
+
+| 编号 | 对用户的影响 | 修法一句话 |
+| --- | --- | --- |
+| BUG-042-01 | 预检与跑批之间目录变了，会出现「图上 ROI 有、汇总表是绿的，荧光值却是空的」——**从产物上完全看不出来** | 预检那份清单作为快照传给跑批，两者从此是同一份 |
+| BUG-042-02 | 别人的 CSV 只要表头含 `CTCF` 子串，会被当成本插件的旧表**删掉** | 改成按整字段比对，认不出的表一律不动 |
+| BUG-042-03 | 整批全失败时只弹一句「输出目录中没有可测量的 ROI ZIP」，真正原因一个字都不显示 | 先显示真实失败原因再收场；空集合与「没发这个键」区别对待 |
+| BUG-042-04 | 一条横穿候选条带的障碍会让整张图被判「找不到干净背景区域」，**障碍旁边明明还有大片干净区** | 快速路径保留，找不到时才跑精确搜索兜底 |
+| BUG-042-05 | 发布脚本从不看 jar：改了 Java 只跑打包那一半，包里会是过时的 class，而测试全绿 | 新增闸门，重编 `plugin_src\*.java` 与 jar 逐 class 比对 |
+| BUG-042-06 | 标注插件会提示「已保存头向 3 条」而文件里只有 2 条（写盘前静默丢弃） | 写文件前先全量校验，有问题一条都不写并逐个点名 |
+
+验证规模：**Python 159 条全过**（本轮新增 8 + 9 = 17 条），**Java 16 条通过**
+（`AUTOWORM_MEASUREMENT_OK`），`make_release.py --previous-exe` 通过。其中 BUG-042-04 的
+8 条用例做过判别性验证（禁掉回退 → 3 条失败；直方图加一个差一的扰动 → 335 个子用例失败），
+BUG-042-05 的闸门也做过：过时 jar → 6 相同 6 报错、**拒绝打包**；重建后 → 9 相同、通过。
+
+两条**只有人工点得出**的验收（无自动化用例覆盖，见下节）：
+BUG-042-06 的标注校验走 GUI + `RoiManager` 那条路；BUG-042-01 的 GUI 接线在
+`_start_processing` 里。
 
 ## 未做自动验证的部分
 
