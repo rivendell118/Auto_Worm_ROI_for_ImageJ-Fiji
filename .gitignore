@@ -79,3 +79,8 @@ desktop.ini
 *.jpeg
 *.bmp
 
+# --- 界面偏好（本机状态，不入库）---
+# 现在写在 %LOCALAPPDATA%\AutoWorm\settings.json（见 worm_roi_gui.py 的 _state_directory），
+# 仓库根或 src\ 下这一份是迁移前的遗留。2026-09-16 已从全部历史清除；
+# 它一旦进了仓库，别人跑起来界面一开就默认指到开发机的文件夹。
+.worm_roi_gui.json
