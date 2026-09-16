@@ -58,3 +58,24 @@ review/*
 *.swp
 Thumbs.db
 desktop.ini
+
+# --- 真实实验图像：一张都不入库 ---
+# 图像一旦进了历史，`git rm` 之后仍能从旧提交里按 blob 取出来——删文件和没发布过是两回事。
+# 2026-09-16 为此改写了 0.4.2 与 LLM 两个副本的全部历史（见 AGENT.md 的落地记录）。
+# 真实的图放仓库之外的 testdata\；合成样例在 diagnostics/test_samples\（上面已忽略）。
+# 既有显微格式也有导出格式：交付出去、贴进汇报的往往就是 png/jpg，那同样是真实数据。
+# 真要把某张图提交进仓库（比如文档配图），用 `git add -f` 显式放行——
+# 这条拦的是「随手拖进来」，不是拦有意的决定。
+*.tif
+*.tiff
+*.nd2
+*.czi
+*.lif
+*.oib
+*.oif
+*.ims
+*.png
+*.jpg
+*.jpeg
+*.bmp
+
