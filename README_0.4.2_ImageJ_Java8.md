@@ -1,5 +1,7 @@
 # Auto Worm ROI —— ImageJ / Fiji (Java 8) Plugin
 
+>**An English translation follows the Chinese original — see [English Version](#auto-worm-roi--imagej--fiji-java-8-plugin-english) below.**
+>
 >该插件用于批量自动圈画线虫，生成ROI；荧光统计与 CTCF 仍交给 ImageJ/Fiji 进行。插件不改变原有的荧光统计与 CTCF 处理过程，只是将这一步自动化。
 >
 >当前版本（0.4.2 CUDA for ImageJ（Java 8））是为使用NVIDIA系列显卡，且  ImageJ 内置 Java 版本为 Java 8 的用户开发的测试版。具体详见 [测试版说明](#测试版说明)
@@ -236,6 +238,8 @@ RawCTCF = worm RawIntDen - worm PixelArea × background raw Mean
 
 测量表每行的末尾还有五列，记录**这一行是用什么校准量出来的**：`PixelWidth`、`PixelHeight`、`SpatialUnit`、`ValueUnit`、`IntensityFunction`（例如 `0.500,0.500,micron,Gray,Straight Line: y = 10 + 2*x`）。同一批图在不同机器或不同会话里算出不同的数值时，先对照这五列。`CTCF` 是校准后的 `Area × Mean` 减去背景项，所以像素尺寸或强度校准一变它就跟着变——例如只把像素尺寸改成原来的一半，同一张图的 `CTCF` 会变成四分之一。
 
+***每张测量表（`<图名>_measurements.csv`）的最后一行固定为这张图的背景值,圈的位置不一定好，建议人工核对一遍再决定要不要采用***
+
 ### 与手工测量对照时
 
 在 ImageJ 里手工 `Analyze > Measure` 时，插件的测量条件有两点与它**故意不同**，想在两边对上数，请先关掉这两项：
@@ -325,3 +329,338 @@ python make_release.py --previous-exe "<上一版的 AutoWormGUI.exe>"
 测试样例可用 `python diagnostics\make_test_samples.py` 生成，它会写出覆盖各类不合格图像的合成 TIFF，并用程序自己的预检逐张复核，判定与预期不符即报错退出。
 
 编译所用 `lib/ij.jar` 为 ImageJ 1.54p 的 `ij.jar`。插件只使用 ImageJ 1.x 的公开 API，`javac --release 8` 即可产出可在 ImageJ 1.54p 及 Fiji 同名版本上运行的 class 文件。模型保持为外置文件，便于后续单独替换。
+
+---
+
+# Auto Worm ROI — ImageJ / Fiji (Java 8) Plugin (English)
+
+>This is the English translation of the document above. The Chinese original is authoritative: if the two disagree, follow the Chinese text.
+>
+>This plug-in batch-draws ROIs around nematodes automatically. Fluorescence quantification and CTCF are still performed by ImageJ/Fiji. The plug-in does not change how fluorescence is measured or how CTCF is computed; it only automates the ROI-drawing step.
+>
+>The current version (0.4.2 CUDA for ImageJ (Java 8)) is a beta build for users with an NVIDIA GPU whose ImageJ runs on Java 8. See [Beta Notice](#beta-notice) for details.
+>
+>This plug-in was developed with the assistance of deepseek-V4.1-flash and ChatGPT 5.6 sol, and reviewed by ChatGPT 5.6 sol and ChatGPT 6 Astra.
+
+## What This Plug-in Does
+
+It reads a grayscale TIFF, segments and outlines each nematode in the batch, and outputs them as ImageJ ROIs.
+
+## How Measurement Is Performed
+
+Once the ROIs are generated they are handed back to ImageJ: the plug-in uses ImageJ's own `ImageStatistics` to measure the pixels of each ROI, applies ImageJ's spatial and intensity calibration to obtain `Area`, `Mean`, `IntDen` and so on, then writes the measurement table with `ResultsTable`. `CTCF` is computed from those values (see [ImageJ Measurement and CTCF](#imagej-measurement-and-ctcf) for details).
+
+This path **does not go through `Analyzer`**: `Analyzer` reads the global settings under `Analyze > Set Measurements` (especially `Redirect to`), which can make the image named in a result row differ from the image the values actually came from. See [When Comparing Against Manual Measurement](#when-comparing-against-manual-measurement).
+
+## Beta Notice
+
+0.4.2 CUDA for ImageJ (Java 8) has most of its functionality working on the development machine. Some error paths, however, have only been code-reviewed because of a lack of data, and were not tested on real data. There may also be error conditions I have not thought of; user feedback is welcome.
+
+In addition, the models in this plug-in were trained on an NVIDIA GeForce RTX 4060 Laptop and have not been tested on other NVIDIA GPU models. If you hit hardware compatibility problems, please report them as well.
+
+Please send feedback to my personal email: rivendell118@gmail.com
+                    or 3024732774@qq.com
+You can also open an issue on GitHub.
+
+## Installation
+
+Hardware requirement: a computer with an NVIDIA GPU.
+Software requirement: Fiji or ImageJ 1.x (1.54p or later) must already be installed.
+
+1. Extract the entire .zip into the root folder of your ImageJ/Fiji — the folder that contains `ImageJ-win64.exe` (in Fiji, `fiji-win64.exe`).
+2. Restart ImageJ/Fiji.
+
+After extraction it should look like this:
+
+```text
+<Fiji root>/
+  ImageJ-win64.exe
+  plugins/
+    Auto_Worm_ROI.jar        the plug-in itself
+    AutoWormImageJ/
+      AutoWormGUI.exe        the GUI
+      models/                segmentation models, external so they can be swapped individually
+      _internal/             runtime libraries (Python, PyTorch, CUDA, cuDNN…)
+      licenses/              full text of third-party licenses
+  README_0.4.2_ImageJ_Java8.md     this file
+  CHANGELOG_0.4.2.md
+  VALIDATION_0.4.2.md
+  LICENSE
+```
+
+- Inside `AutoWormImageJ`, `models`, `_internal` and `licenses` are **all required!!!** Do not copy only some of them.
+- Do not delete `licenses/`; the reason is in [License and Third-Party Components](#license-and-third-party-components).
+- The four documents (README / CHANGELOG / VALIDATION / LICENSE) can go anywhere; their location does not affect operation.
+- If you would rather not extract into the root folder, manually copying the two entries under `plugins/` into `<Fiji root>/plugins/` has the same effect.
+
+**End users do not need to install Python, and do not need to install the CUDA Toolkit.** PyTorch, CUDA 13.2, cuDNN, OpenCV, SciPy and the MSVC runtime are all bundled inside `AutoWormImageJ`. The user's machine does, however, need an NVIDIA driver of **version 580 or later**. "Settings > CUDA and system info" in the GUI shows the GPU, driver, PyTorch, CUDA and cuDNN status; the plug-in also runs the same check automatically before it starts processing.
+
+## Quick Start
+
+1. Open ImageJ.
+2. Run the plug-in: the first item in the `Plugins > Auto Worm ROI` submenu, named something like `Auto Worm ROI <version>`. The menu text is plain English ASCII, to stay compatible with how Fiji 1.54p reads `plugins.config` under the system encoding; the window itself still offers Chinese or English.
+3. In the window, choose the current folder, the image type and the expected worm count, tick "smooth repair" / "manual annotation" / "partial outlining" as needed, then click "Start processing".
+4. When processing finishes the window stays open and ImageJ automatically receives and measures this batch's results. You can then pick another folder and keep going.
+5. Closing the window ends the plug-in.
+
+Results are written by default into **the `_auto_roi` subfolder of the current folder**, and that location can be changed in the settings window. Under it the files are always split into two subfolders, `measurements` (measurement tables) and `other` (everything else); see [Result Files](#result-files).
+
+## When the Current Image Has Unsaved Changes
+
+After the plug-in is invoked and before the window opens, if the image currently open in ImageJ has unsaved changes (for example you just applied a filter, a crop or an inversion), a prompt appears first: **this run will process the version saved on disk.** Both outlining and measurement read pixels from the file on disk, so unsaved on-screen changes play no part; otherwise the ROIs and the measurement results would point at two images that look the same but are not.
+
+- Click "OK" to continue: this batch is processed from the on-disk version and the unsaved changes are ignored (the image itself is neither modified nor saved).
+- Click "Cancel" to do nothing, and the status bar reports that nothing was processed.
+
+To process the changes as well, save the image in ImageJ first and then invoke the plug-in again.
+
+## Parameters in the Window
+
+| Parameter | Purpose |
+| --- | --- |
+| Current folder | The directory to process. The batch scope is the TIFFs directly under it |
+| Image type | `High-clarity image` or `low-clarity image` — two segmentation models trained on different acquisition conditions |
+| Expected worm count n | How many worms each image should contain. The detected count must equal it; images that do not match need manual review |
+| Smooth repair | Independent contour-quality checking plus conservative shape repair, applied on top of the model's output |
+| Manual annotation (head direction / boundary / exclusion) | When enabled, reads the head-direction arrows, manual boundaries and background exclusion regions you drew |
+| Partial outlining (requires manual head direction) | Outlines only one segment of the worm body rather than the whole worm |
+
+## Feature Details
+
+### Image Type and Models
+
+The two models were trained under different acquisition conditions: `high-clarity image` and `low-clarity image`. Choosing the wrong one does not raise an error; segmentation quality simply drops. So when you change acquisition hardware or magnification it is worth trying both and comparing each image's `*_QC.png`. The models are ordinary files under `AutoWormImageJ\models\` and can be replaced individually.
+
+### Expected Worm Count n
+
+The program requires that the number of worms detected in each image be **exactly equal to n**. Images whose count matches get `qc_status` `PASS` in `batch_summary.csv`; those that do not are recorded as `REVIEW_COUNT_MISMATCH` and need manual review — note that this verdict only affects the QC flag, and segmentation is never forced to produce n worms. When images in the same folder have different worm counts, process them folder by folder.
+
+### Smooth Repair
+
+This performs contour-quality checking plus safety-gated shape repair on the segmentation result: repair happens only when it will not noticeably change the area and centroid, and if the change would exceed the limit nothing is touched. It suits images with rough or irregular boundaries. When enabled, a `*_shape_qc.csv` is written for each image, whose `status`, `repaired` and `needs_review` fields describe that image's contour quality and whether anything was changed. If any worm was changed or flagged as a questionable contour, that image is shown with a yellow frame in the monitor; the next section explains how frame colours are decided.
+
+### Frame Colours in the Monitor
+
+Every QC image in the monitor has a frame around it, and the colour tells you whether the image is worth opening for a closer look. Only the highest-priority colour is shown: **red > yellow > blue**.
+
+| Frame | Trigger |
+| --- | --- |
+| Red | The number of worms detected in that image differs from the expected worm count n, i.e. that image's `qc_status` in `batch_summary.csv` is `REVIEW_COUNT_MISMATCH`. The window additionally shows a line "needs manual review \| <original name>" in the top-left corner of that image |
+| Yellow | The count is fine, but the segmentation result was rewritten by the program: any of `shape_refined_count` (worms whose shape smooth repair actually changed), `shape_review_count` (worms smooth repair flagged as questionable contours) or `low_clarity_split_count` (number of touching-worm splits in low-clarity mode) is greater than 0 |
+| Blue | The currently selected image, unrelated to result quality |
+
+A red frame means the **count** is wrong and must be dealt with: check the expected worm count n, or use manual annotation to add head-direction arrows or manual boundaries. A yellow frame only means **this image is not the model's raw output** — the contour was repaired, or in low-clarity mode a touching block was split into two. It does not mean the result is necessarily wrong (the repair itself is safety-gated and will not act if the change exceeds the limit), but these are the images to look at first when spot-checking by hand.
+
+The yellow frame is based on per-worm records, and the two tables do not have the same columns:
+
+- `<image>_shape_qc.csv`: the `status` column is `REVIEW_SHAPE_REFINED` (the shape really was changed) or `REVIEW_SHAPE` (only flagged, nothing was done). A true `repaired` means the contour really was changed; `needs_review` is true in both states, so it flags a wider set than `repaired`. It also carries the area and centroid shift before and after repair, various quality metrics, and the reasons for the verdict spelled out in the `reasons` column.
+- `<image>_split_qc.csv`: each row is one touching-worm split, with `status` `REVIEW_LOW_CLARITY_SPLIT`, plus the split threshold, the head gap width, the boundary support and the area ratio of the two sub-blocks, from which you can judge how trustworthy that split is.
+
+Red and yellow frames are **drawn directly into the `*_QC.png` file**: open it in another image viewer, preview it in a file manager, or send it to someone else, and the frame is still there. The blue frame exists only inside the window, as a highlight of the current selection.
+
+Manual annotation (head-direction arrows / manual boundaries / background exclusion regions) and partial outlining do **not** trigger a yellow frame on their own — the former is a change you specified yourself, and the latter only changes the extracted segment, not how worms are divided. Such images are still judged by the red and blue colours alone.
+
+Images that failed processing do not appear in the monitor: their result files (including `*_QC.png`) are deleted along with the failure, see [Batch Processing, Failures and Summary](#batch-processing-failures-and-summary).
+
+### Manual Annotation
+
+Three kinds of annotation: **head-direction arrows**, **manual boundaries** and **background exclusion regions**.
+
+- `head_1`, `head_2`… straight lines or arrows drawn from inside the worm body towards the head; one per worm.
+- `boundary_1`… lines or freehand lines, used to indicate a manual boundary between touching worms.
+- `exclude_1`… closed-area ROIs; the interior does not take part in detection, which suits images with dirty background.
+
+Head-direction arrows and manual boundaries are **two peer algorithms that work independently**: with only head-direction arrows, the program roughly splits touching worms by head direction; with only manual boundaries, the program splits or redraws adjacent ROIs directly from the boundary lines; when both are present, head-direction rough splitting always runs first, followed by manual-boundary refinement. Manual-boundary refinement is allowed to redistribute the pixel ownership of adjacent ROIs even when the worm count is already correct, but it never changes the original total set of foreground pixels.
+
+**A manual boundary line is a hard constraint**: where you drew a boundary, the interface between the two adjacent worm segments lands on that line, no longer decided by the model. Snapping happens only within a narrow band around the boundary line (about 4% of the image's short side, roughly 40 pixels on a 1024-pixel image): if the actual gap is further from your line than that, the program keeps the model's division — forcing it would cut a fragment belonging to no worm out of the band, which is worse than a seam that is slightly off.
+
+**Annotating directly in the GUI is recommended** (tick "manual annotation").
+
+How the three annotations work in the window:
+
+- **Head-direction arrow**: press the left button inside the worm body, drag towards the head and release; the tip of the arrow is the head.
+- **Manual boundary**: along the gap between two touching worms, from the head end to the tail end, **left-click to place the nodes one by one**; as the mouse moves, a dashed line follows the cursor from the last node; **right-click ends** that boundary, and Esc abandons the one being drawn. The polyline's corners stay exactly where you clicked them and are not rounded off or thinned; once saved it is shown as a cyan polyline, and it is at the same time the boundary the program actually uses.
+- **Background exclusion region**: press the left button and draw a loop around the dirty background or other region that needs no detection; releasing closes it automatically.
+
+You can also prepare ROIs in ImageJ's ROI Manager using the prefixes above and run `Plugins > Auto Worm ROI > Save Current Annotation`; the plug-in then writes `<original filename>.autoworm.json` next to the TIFF. A per-image sidecar does not affect the annotations of other images in the same folder; the older folder-level `_manual_head_annotations.json` remains supported.
+
+When both records exist for the same image, they are **merged separately per annotation type**: a non-empty type in the sidecar overrides the folder record, while an empty type falls back to the folder record, so a sidecar that only has head-direction arrows will not lose the manual boundaries drawn for that image in the window. When you save an image in the window, if that image already has a sidecar the same result is written back to the sidecar too, so deletions and changes made in the window take effect immediately.
+
+⚠️ Please do not maintain the annotations of the same image across both interfaces. The following cases cannot currently be done from the ImageJ side:
+
+- The image's boundary exists only in the `_manual_head_annotations.json` written by the GUI, and you delete `boundary_` in the ROI Manager and run `Save Current Annotation` again — the sidecar's `boundaries` is then an empty array, the merge rule falls back to the folder record, and that boundary still takes effect.
+- To really delete it, delete it in the GUI and save, or simply delete that image's `<original filename>.autoworm.json`.
+- The reverse direction is unaffected: as long as the sidecar contains a non-empty boundary it overrides the boundary for the same image in the folder record, and saving in the window writes the change back to the sidecar.
+
+*So, for convenience, please make your changes in the GUI whenever you can.*
+
+### Partial Outlining
+
+Ticking "partial outlining (requires manual head direction)" forces head-direction annotations to be read and outlines only one segment of the worm body. The two sliders share one directed track: **the left end is the head (0), the right end is the tail (1)**. For example the middle section `0.25–0.75`, the last quarter `0.75–1.00`, the front half `0.00–0.50`.
+
+The engine first detects the complete worm body and its centreline, then extracts the selected segment along the head-to-tail direction. **The background ROI is still based on the complete worm body**, so that the part of the body that was cut away does not leak into the background.
+
+### Batch Processing, Failures and Summary
+
+Every run writes `batch_summary.csv` into the output folder's `other` subfolder, refreshing it after each image, so you still have the completed part if the run is cancelled midway or hits an error.
+
+- **A single failure does not stop the batch.** When an image errors out, the program records the reason and moves to the next one; the remaining images are processed as usual and handed to ImageJ for measurement. The failed one appears in the log as `Failed_<original filename>: ERROR <reason>`, and in `batch_summary.csv` as `Failed_<original filename>` with `qc_status` `FAILED` and the reason in the last column `error` (that column is empty for successful rows). **The original file on disk is not renamed**; `Failed_` is only a notation used in the log and the summary table.
+- **A failed image leaves no result files behind.** The program writes `*_RoiSet.zip` before it draws the QC image, so if it fails midway that zip is deleted, along with any measurement table and intermediate reports already written for that image. This matters: ImageJ only measures images that have a `<image>_RoiSet.zip`, so if leftovers were not cleaned up, an image just reported as failed would instead be measured into the result table. In rare cases (for example the QC image is open in an image viewer and cannot be deleted) the deletion fails; the log then adds a line `Could not remove partial results for ...` and you should delete it by hand as it says.
+- **Progress.** Each finished image prints a line `Progress: 3/12 (25%)`. The failed image counts towards progress too, so you can tell how much is left from the log window.
+- **Duplicate result names are rejected.** Result files are named after the input filename with the extension removed, so `a.tif` and `a.tiff` in the same folder would write to the same set of filenames and overwrite each other. When this is detected the whole batch is rejected before processing starts, with the conflicting filenames listed, rather than silently overwriting.
+- **Failed images do not vanish silently on the ImageJ side.** After measurement finishes, if the batch contained failed images the plug-in pops up "some images were not processed" and lists each `Failed_<original filename>` with its reason, and writes the same to ImageJ's log window.
+
+## Supported Image Formats
+
+Only **single-channel, single-plane, single-time-point** grayscale TIFFs are processed: 8-bit and 16-bit are both fine, and **16-bit big-endian (`I;16B`) is supported as well**.
+
+Colour TIFFs (RGB, RGBA, palette, grayscale with alpha, CMYK) and multi-page TIFFs (multi-channel, Z-stacks, time series, including ImageJ hyperstacks and OME-TIFF) are rejected; so are non-TIFF files such as PNG or BMP renamed to `.tif`.
+
+**Exception: images whose extra planes are entirely 0 are allowed through.** Acquisition software such as MetaMorph attaches an empty overlay plane to each image; the real data in such files is still on the first page, the extra plane carries no signal and cannot produce a wrong value, so it is not rejected — the log simply says so, for example `Phsp16.2 0101-70-1.tif: 1 empty extra plane(s); treated as overlay`. Note that ImageJ does **not** skip this plane: it displays the image as 2 slices, so before measuring make sure the window is on slice 1.
+
+The reason for rejection is that the program reads only the **first page** of the file. In a batch, apart from the one image currently open in ImageJ, every image is reopened from disk by ImageJ and its first plane measured, consistent with the program; but **the one currently open** (the one the plug-in handed to the original interface) is measured by ImageJ at whatever channel, Z slice and time point the window is currently showing. As long as it is sitting on another plane, the ROIs drawn and the values actually measured will point at different planes, and **no error is raised anywhere**. The check therefore runs before processing starts and covers the whole batch: if even one image fails to qualify, the filenames are listed grouped by reason and the whole batch is rejected, rather than running part of it and then stopping. There is a cap on how many filenames are listed at once; above it a line "N images in total failed" is added, so the count is never under-reported.
+
+For multi-channel or stack data, first split it into single-page TIFFs with ImageJ's `Image > Stacks > Stack to Images`, keep only the channel you want to measure, and process again.
+
+Binary (1-bit) images are not among the formats above, but they are **not rejected**: before starting, the program points out that "this model was not trained on binary images" and, once confirmed, processes them as usual. Both models were trained on 8-bit and 16-bit acquisitions, so segmentation of binary images may be inaccurate; the notice stays, it just does not block the flow.
+
+## File and Folder Naming
+
+Result files are all generated from the input filename with its extension removed (see the next section), so the input name directly determines the output name. There are two restrictions:
+
+**Do not use square brackets `[` `]` in either filenames or folder names.** Before processing starts the program lists the input folder in full, and that step uses wildcard matching, in which square brackets are a **character set**: when a **folder name** is `[batch2]`, it is understood as "any one of the six characters b, a, t, c, h, 2", so not a single TIFF matches and the whole batch is rejected with `No TIFF images found in: ...` — even though the window has clearly already listed the images (the window uses a different directory-listing method), so the symptom and the message do not match and it is very easy to mistake for a broken program. Square brackets in image **filenames** are not currently blocked, but it is best to avoid them as well, so the same class of problem does not come back later.
+
+**Do not put spaces at the start or end of a filename.** Processing itself runs through fine, but the measurement step compares the filename string against the name reported by the batch character by character, and one extra space at either end means no match: that image is **silently skipped** — no measurement result and no warning at all. Spaces in the **middle** of the name are fine (`0716-0-1 green.tif` is named that way).
+
+## Result Files
+
+`<image>` means the input filename with its extension removed. The output directory is always split into two subfolders: **measurement tables go in `measurements`, everything else in `other`**, so the few tables you take away for statistics always stay together and are not mixed up with preview images and QC details.
+
+| File | Written by | Location | Contents |
+| --- | --- | --- | --- |
+| `<image>_measurements.csv` | ImageJ | `measurements` | That image's measurement table |
+| `ImageJ_measurements_all.csv` | ImageJ | `measurements` | Merged measurement table for the whole batch |
+| `batch_summary.csv` | Outlining | `other` | One row per image: detected count, `qc_status`, elapsed time, failure reason (the `error` column) |
+| `<image>_RoiSet.zip` | Outlining | `other` | That image's ROI set; ImageJ reads it to measure |
+| `<image>_QC.png` | Outlining | `other` | Preview of the outlining result, with the segmentation overlaid and the QC status written on it; worth spot-checking |
+| `<image>_head_annotations.csv` | Outlining | `other` | Matching result of the head-direction annotations |
+| `<image>_manual_split_qc.csv` | Outlining | `other` | Details of manual-boundary refinement, written only when that image's boundary actually changed pixel ownership |
+| `<image>_shape_qc.csv` | Outlining | `other` | Contour quality before and after smooth repair |
+| `<image>_split_qc.csv` | Outlining | `other` | Details of touching-worm splits in low-clarity mode |
+| `<image>_segment_qc.csv` | Outlining | `other` | Segment details for partial outlining |
+
+**Versions before 0.4.2 laid all of the files above flat in the output folder.** This version understands only the new layout: when you invoke the plug-in to measure, ROI sets are looked for only under `other`; if none is found it reports "ROI ZIP not found" and skips that image, and measurement tables always go into `measurements` (created automatically if the folder does not exist). To measure a folder left over from an older version, first move the files into the two subfolders as in the table above, or simply run the whole thing again.
+
+The four QC detail tables `<image>_manual_split_qc.csv`, `<image>_shape_qc.csv`, `<image>_split_qc.csv` and `<image>_segment_qc.csv` are **written only when the corresponding feature is enabled**; when it is not, any file of the same name left by a previous run is deleted along the way, so you do not end up looking at stale data.
+
+Do not confuse `<image>_head_annotations.csv` with the annotation input files: `_manual_head_annotations.json` (in the **image folder**) and `<image>.autoworm.json` (next to the TIFF) are the annotation data itself, not results.
+
+## ImageJ Measurement and CTCF
+
+Each ROI is measured by ImageJ itself for `Area`, `Mean`, `Min`, `Max`, `IntDen`, `Median` and `RawIntDen`. The plug-in additionally outputs:
+
+```text
+BackgroundCorrectedMean = worm Mean - background Mean
+CTCF = worm IntDen - worm Area × background Mean
+RawCTCF = worm RawIntDen - worm PixelArea × background raw Mean
+```
+
+`CTCF` respects ImageJ's spatial and intensity calibration; `RawCTCF` uses raw pixel values (`RawCTCF` is the algorithm used by older development versions and was abandoned once the released build was wired into ImageJ. I kept it anyway because I did not want to delete it). `MeasurementBackend` in the measurement table records the ImageJ version actually used.
+
+**The column order is fixed: `Area`, `Mean`, `Min`, `Max`, `IntDen`, `Median`, `RawIntDen` occupy columns 1 to 7**, followed by `Index`, `Image`, `Label`, `PixelArea`, `BackgroundCorrectedMean`, `CTCF`, `RawCTCF`, `Type` and `MeasurementBackend` in that order. The seven values you take straight into a statistical analysis are all at the front, so importing into Excel, R or pandas needs no picking by column name. `<image>_measurements.csv` and `ImageJ_measurements_all.csv` use the same column order. The image's calibration information does not take part in this ordering and is still pinned to the very end of the row (see below).
+
+`RawIntDen` and `RawCTCF` in the table come from the same set of raw values: the plug-in takes `getRawStatistics()`, i.e. the **true sum of raw pixels**, and this column serves only the reference quantity `RawCTCF` and is used nowhere else. It therefore differs from ImageJ 1.54p's **column of the same name** on images that have an intensity calibration — ImageJ's column computes "pixel count × calibrated mean"; on images without an intensity calibration the two agree (this was cross-checked on 8-bit, 16-bit and 32-bit float images this round, and the conclusion is limited to ImageJ 1.54p). To compare `RawIntDen` against ImageJ value by value, first confirm the image has no intensity calibration; `CTCF` agrees with ImageJ in both cases.
+
+Each row of the measurement table also ends with five columns recording **what calibration this row was measured with**: `PixelWidth`, `PixelHeight`, `SpatialUnit`, `ValueUnit`, `IntensityFunction` (for example `0.500,0.500,micron,Gray,Straight Line: y = 10 + 2*x`). When the same batch of images yields different values on a different machine or in a different session, compare these five columns first. `CTCF` is the calibrated `Area × Mean` minus the background term, so it follows any change in pixel size or intensity calibration — for example halving the pixel size alone turns the `CTCF` of the same image into a quarter of what it was.
+
+***The last row of each measurement table (`<image>_measurements.csv`) is always that image's background value. The circle placement there is not necessarily good, so please check it by hand before deciding whether to use it.***
+
+### When Comparing Against Manual Measurement
+
+When you measure by hand with `Analyze > Measure` in ImageJ, the plug-in's measurement conditions **deliberately differ** in two respects; to get the two to agree, turn both off first:
+
+| Setting under `Set Measurements` | What the plug-in does | Before comparing |
+| --- | --- | --- |
+| `Limit to Threshold` | **Not inherited**; measures the whole ROI regardless of threshold | Turn it off |
+| `Redirect to` | **Not inherited**; measures directly the original image written in that row | Set it to `None` |
+
+With `Limit to Threshold` on, a manual measurement counts only the pixels inside the ROI that fall within the threshold range, while the plug-in counts the whole ROI, so `Area`, `Mean`, `IntDen`, the background mean and `CTCF` can all differ. Measuring the complete ROI is this plug-in's consistent convention, not an error; if threshold-based measurement is wanted later it will be added as a separate mode rather than following this global switch. `Redirect to` was deliberately avoided from 0.4.0 onwards: it makes the image named in a result row differ from the image the values came from, while `RawIntDen` in the same row is unaffected by it, and nothing in the interface tells you. To measure a different image, open that image and measure it directly.
+
+**Measurement uses the calibration on the file.** Both outlining and measurement read pixels from the file on disk, and the calibration comes from that same file; so if you have temporarily changed the calibration in ImageJ with `Analyze > Calibrate...` or `Analyze > Set Scale...` and have not written it back to the file, invoking the plug-in first pops up a notice listing both the window's and the file's calibration and stating that the file's will be used; clicking "Cancel" does nothing. To apply the new calibration to measurement, do `File > Save` to write it back to the file and invoke the plug-in again. The exception is the **Global** option in `Analyze > Set Scale...`: once it is ticked, every image is computed by it regardless of the calibration in each file, and the log then states that "the global calibration is in effect and overrides each image's own calibration". At the start of each measurement run ImageJ's log also records the calibration actually used.
+
+## Frequently Asked Questions
+
+**There is no Auto Worm ROI in the menu.**
+Check that `Auto_Worm_ROI.jar` is under `<Fiji root>/plugins/`, then restart Fiji — a newly installed plug-in only appears in the menu after a restart.
+
+**It says "this model was not trained on binary images".**
+That is a notice, not an error; confirm it and processing continues as usual. Binary images can be used, only the segmentation accuracy is not guaranteed.
+
+**It says "some images were not processed", or the result table is missing an image.**
+The missing one failed. Look in `batch_summary.csv` under the output folder's `other` subfolder for the row whose `qc_status` is `FAILED`; the `error` column gives the reason.
+
+**The whole batch was rejected, saying the images do not qualify.**
+Deal with the filenames and reasons listed in the dialog: split multi-channel or stack data with `Image > Stacks > Stack to Images`, and convert damaged or renamed non-TIFF files into proper single-page grayscale TIFFs.
+
+**The log shows `Could not remove partial results for ...`.**
+One failed image's result files could not be deleted (usually the QC image is open in an image viewer). Close the viewer and delete them by hand using the filename in the log.
+
+**The image shows as several slices in ImageJ.**
+This is an image with an empty overlay plane, which is one of the allowed cases. Before measuring, make sure the window is on **slice 1**.
+
+**The worm count is wrong.**
+First check that the "image type" matches the model for your acquisition conditions, then check the expected worm count n. For images with heavy boundary adhesion, try smooth repair. If none of that works, use manual annotation to draw head-direction arrows or manual boundaries.
+
+**I cannot find the results.**
+By default they are in **the `_auto_roi` subfolder of the input image folder**; you can also change it to another path in the window. Measurement tables are in `measurements` under it, and the rest in `other`.
+
+**The window stays open after processing — is it stuck?**
+No. The window staying open is by design: once a batch is done it is handed to ImageJ for measurement automatically, and you can pick the next folder; the plug-in ends when you close the window.
+
+**It keeps saying "ImageJ is measuring the previous batch", but nothing is actually running in ImageJ.**
+A leftover notification file from the previous run is still in the bridge directory. Normally these files are deleted by the ImageJ side once measurement finishes; if you close ImageJ outright during measurement (a large batch takes several minutes), they stay on disk, and from then on every click on "Start processing" is blocked by this message with no way to clear it from the window. The fix: **close this window, restart ImageJ, and run the plug-in again from Fiji** — each run of the plug-in creates a fresh bridge directory, and the new one is guaranteed to be clean. If you would rather not restart Fiji, you can also delete the leftover `*.properties` files in `%TEMP%\autoworm-imagej-*\` by hand.
+
+**I clicked ✕ and the window did not close; the status bar is stuck on "waiting for the current image and summary table to be written safely…".**
+Click ✕ once more and it closes normally, **with no data loss**. This is a timing issue where the exit-confirmation dialog happens to coincide with the end of a batch: that click only recorded "please exit", while the finishing routine had already completed and nobody came back to look at the flag. Everything already written is in the output folder, so it is safe to close.
+
+## License and Third-Party Components
+
+This software's own code and documentation are released under the **MIT License**, the full text of which is in `LICENSE` in the root of the distribution package. That license covers only this project's own code and documentation; third-party components distributed with the software are still distributed under their own licenses and are unaffected by MIT.
+
+`AutoWormImageJ\licenses\` holds the third-party component licenses distributed with the software, five in total:
+
+```text
+THIRD-PARTY-NOTICES.txt   component list, each one's license, and where its full text sits in the package (read this one first)
+NVIDIA-CUDA-EULA.txt      NVIDIA CUDA Toolkit End User License Agreement
+NVIDIA-cuDNN-SLA.txt      NVIDIA cuDNN Software License Agreement
+Pillow-LICENSE.txt        Pillow license
+roifile-LICENSE.txt       roifile license
+```
+
+The runtime bundle contains PyTorch, NumPy, SciPy, OpenCV, Pillow and roifile, plus NVIDIA's CUDA runtime, cuBLAS, cuDNN, cuFFT, cuRAND, cuSOLVER, cuSPARSE, NVRTC, nvJitLink and CUPTI dynamic libraries (all under `_internal\torch\lib\`). Where each one's full license text lives is given in `THIRD-PARTY-NOTICES.txt`.
+
+NVIDIA does not endorse or warrant this software in any way. When using the NVIDIA components distributed with the software, the following restrictions apply: they must not be reverse-engineered or decompiled, their copyright notices must not be removed, they must not be distributed as a standalone product, these DLLs must not be redistributed separately, and they must not be used in a way that subjects you to an open-source license requiring you to open your source. These libraries are provided "as is" and without warranty, and NVIDIA expressly states that they have not been tested or certified for medical, life-support or other critical applications.
+
+**This software is a research tool; its measurement results must not be used for clinical diagnosis or any life-safety-related purpose.**
+
+## Appendix: Building and Packaging (Developers)
+
+Requires a JDK, and a Python environment with PyInstaller, PyTorch, OpenCV, SciPy, Pillow and roifile installed:
+
+```bat
+build_0.4.2.bat "full path\python.exe"
+```
+
+The last build step copies the whole `licenses\` directory into `dist\AutoWormImageJ\licenses\`; if that directory is missing the build fails with an error rather than silently producing a package with no license notices.
+
+**After changing `src\*.py` you must rebuild**: `AutoWormGUI.exe` embeds a copy of `src\`, so without repackaging the user still gets the old code. To package the release zip, run:
+
+```bat
+python make_release.py --previous-exe "<previous version's AutoWormGUI.exe>"
+```
+
+It first checks that the version number agrees in `plugins.config`, `APP_VERSION` and `SOFTWARE_VERSION`, then compares every module inside the EXE against the current `src\` one by one (refusing to package on any mismatch), then refreshes the four documents into `dist\`, and finally packages everything into `release\AutoWorm-<version>-ImageJ.zip` in the `plugins/` layout. When `--previous-exe` is given it additionally requires that **the old package differ from the current source**, otherwise the comparison proves nothing.
+
+Test samples can be generated with `python diagnostics\make_test_samples.py`, which writes synthetic TIFFs covering every kind of non-qualifying image and re-checks each one with the program's own pre-check, failing with an error if a verdict does not match expectations.
+
+The `lib/ij.jar` used for compilation is ImageJ 1.54p's `ij.jar`. The plug-in uses only ImageJ 1.x's public API, and `javac --release 8` is enough to produce class files that run on ImageJ 1.54p and Fiji versions of the same name. The models stay as external files so they can be swapped individually later.
