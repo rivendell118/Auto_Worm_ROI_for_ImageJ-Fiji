@@ -86,12 +86,14 @@ desktop.ini
 .worm_roi_gui.json
 # --- 开发文档与历史探针：不入库，集中在仓库外 ---
 # AGENT.md 是交接文档，通篇是本机的目录布局（77 处绝对路径）；tests\ 里那批历史探针
-# 有 29 个带着本机路径。它们同时是某些实验现象的唯一记录，所以是**搬走**而不是删掉。
+# 有 29 个带着本机路径，diagnostics\ 里另有 1 个（split_upperbound.py），共 30 个。
+# 它们同时是某些实验现象的唯一记录，所以是**搬走**而不是删掉。
 # 2026-09-16 从全部历史里清除，现在放在仓库外：
 #   AGENT.md -> 仓库外的 devdocs\（AGENT-0915-0.4.2.md / AGENT-0916-LLM.md）
-#   探针     -> 仓库外的 probes\（两个副本里这批文件逐字节相同，只留一份）
+#   30 个探针 -> 仓库外的 probes\（两个副本里这批文件逐字节相同，只留一份）
 # 下面把名字列全，是防止被顺手拷回来——**要放回来，先想清楚里面的路径怎么办**。
 AGENT.md
+diagnostics/split_upperbound.py
 tests/_diff.py
 tests/_diff_broi.py
 tests/baseline_768.py
@@ -121,3 +123,10 @@ tests/verify_contact.py
 tests/verify_contact_br6.py
 tests/vis_geometry.py
 tests/vis_merging.py
+# --- 审查记录里的本机路径：就地换成占位符 ---
+# review\ 下几份复审记录原本逐条写着审查用的绝对路径。它们是留档，不能删，
+# 所以 2026-09-16 把路径本身换成了 <0.4.1 仓库根> / <审查材料目录> 这样的占位符，
+# 并同样改写了全部历史（只改当前版本没用，旧提交里 blob 还是原文）。
+# 替换表见仓库外 devdocs\sanitize_machine_paths.py。
+# 推公开仓库之前，用 devdocs\audit_publish_paths.py 复查一遍——**别用 grep 量这个**，
+# Git Bash 会吃掉反斜杠，`https://` 和源码里的 \n 转义也全会命中。

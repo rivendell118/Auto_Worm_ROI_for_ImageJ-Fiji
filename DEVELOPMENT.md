@@ -107,7 +107,7 @@ java -cp "build\measurement_test_classes;lib\ij.jar;build\plugin_classes" AutoWo
 | 不在仓库里 | 在哪 | 为什么 |
 | --- | --- | --- |
 | 交接文档 `AGENT.md` | 工作区 `devdocs\` | 通篇是本机目录布局 |
-| 29 个历史探针脚本 | 工作区 `probes\` | 带本机路径；但它们是某些实验现象的唯一记录 |
+| 30 个历史探针脚本 | 工作区 `probes\` | 带本机路径；但它们是某些实验现象的唯一记录 |
 | 真实实验图像 | 工作区 `testdata\` | 图像进了 git 历史就撤不回来 |
 | 界面偏好 `.worm_roi_gui.json` | `%LOCALAPPDATA%\AutoWorm\settings.json` | 本机状态，且会把开发机的文件夹带给别人 |
 
