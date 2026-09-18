@@ -1,6 +1,6 @@
 from __future__ import print_function
 
-"""把一批新的人工标注并进已有训练集，产出 0.4.2 用的数据集。
+"""把一批新的人工标注并进已有训练集，产出 0.4.3 用的数据集。
 
 与 `prepare_boundary_finetune_dataset.py` 的两点不同，都是被补充样例4 的实际文件命名逼出来的：
 
@@ -9,6 +9,14 @@ from __future__ import print_function
   「去掉开头 P 再试一次」，两边都对不上。
 - 归一化模式、来源标签、前缀都改成开关。高清单用 legacy、低清单用 background_aware，
   同一批图在两个档位下要产出两份不同归一化的数据集。
+- 划分规则也改成开关（`--supplement-split`）。补充样例4 的名字以 `-1`/`-2` 结尾，
+  按那个后缀分就够了；补充样例5 没有这个后缀（它的留出图在另一个文件夹里、根本不在
+  这个入参里），因此需要「这一批全部进训练集」这一档。
+- 毛病标签也改成开关（`--issue`）。训练脚本 `issue_from_stem()` 只认
+  `boundary3__<毛病>__…` 这一种 Stem 形状，缺了那一段就一律当 `normal`，
+  于是 `--hard-repeat` / `--contact-boost` / `--continuity-boost` 对这些图全是空转。
+  补充样例5 的四张是虫体大量重叠的拥挤图（`OverlapPixelsResolved` 3.1~4.5 万像素），
+  正是 contact boost 要处理的情形，所以需要能显式给这一批打上 `merge`。
 
 基座数据集自己的划分会被保留（`split_manifest.csv` 在就照抄），这样 0.3.3 那次
 补充样例3 的 10 张留出图不会被降级成训练图。
@@ -98,8 +106,37 @@ def copy_base(base_root, image_dir, mask_dir):
     return rows
 
 
+def supplement_split_for(source_stem, supplement_split):
+    """决定这一张补充样本进训练还是留出。
+
+    `auto` 是补充样例4 以来的规则：文件名以 `-1` 结尾进训练、`-2` 结尾进留出，别的
+    一律报错——那批是靠这个后缀把留出图藏起来的。`training` 用在这批样本的留出图
+    **不在入参里**的时候（补充样例5 把留出图放在另一个文件夹），此时再按后缀猜就会
+    直接抛错。
+    """
+    if supplement_split == "training":
+        return "training"
+    match = re.search(r"-([12])$", source_stem.strip())
+    if not match:
+        raise ValueError("补充集文件名应以 -1 或 -2 结尾：%s" % source_stem)
+    return "training" if match.group(1) == "1" else "validation"
+
+
+def stem_for(source_stem, prefix, issue):
+    """拼出训练脚本认得的 Stem。
+
+    带 `--issue` 时要写成 `boundary3__<毛病>__<其余>`：`issue_from_stem()` 先看开头是不是
+    `boundary3__`，再看第二段是不是毛病名，两段缺一不可。这一段是**训练侧的既有约定**，
+    不是这批数据的来源（来源记在 manifest 的 `Source` 列里），所以下面注释里写清楚。
+    """
+    name = safe_name(source_stem)
+    if issue:
+        return "boundary3__%s__%s" % (issue, name)
+    return "%s__%s" % (prefix, name)
+
+
 def build_supplement(supplement_root, prefix, source, normalization, image_dir, mask_dir,
-                     overlay_dir):
+                     overlay_dir, supplement_split="auto", issue=""):
     roi_zips = sorted(path for path in supplement_root.rglob("RoiSet_*.zip")
                       if "_auto_roi" not in str(path).lower())
     if not roi_zips:
@@ -117,19 +154,17 @@ def build_supplement(supplement_root, prefix, source, normalization, image_dir, 
         normalized = normalize_for_segmentation(array, mode=normalization)
 
         source_stem = roi_zip.stem[len("RoiSet_"):]
-        match = re.search(r"-([12])$", source_stem.strip())
-        if not match:
-            raise ValueError("补充集文件名应以 -1 或 -2 结尾：%s" % source_stem)
-        stem = "%s__%s" % (prefix, safe_name(source_stem))
+        split = supplement_split_for(source_stem, supplement_split)
+        stem = stem_for(source_stem, prefix, issue)
         Image.fromarray(normalized, "L").save(str(image_dir / (stem + ".png")))
         Image.fromarray(labels).save(str(mask_dir / (stem + "_masks.png")))
         label_overlay(normalized, labels).save(str(overlay_dir / (stem + "_labels.png")))
 
         rows.append({
             "Stem": stem,
-            "Split": "training" if match.group(1) == "1" else "validation",
+            "Split": split,
             "Source": source,
-            "Issue": classify_issue(source_stem),
+            "Issue": issue or classify_issue(source_stem),
             "Instances": int(labels.max()),
             "Width": int(image.size[0]),
             "Height": int(image.size[1]),
@@ -150,6 +185,15 @@ def main():
     parser.add_argument("--source", default="supplement", help="manifest 里的来源标签")
     parser.add_argument("--normalization", choices=("legacy", "background_aware"),
                         default="legacy")
+    parser.add_argument("--supplement-split", choices=("auto", "training"),
+                        default="auto",
+                        help="auto：按文件名末尾的 -1/-2 分；"
+                             "training：补充集全部进训练集（留出图在别的文件夹时用）")
+    parser.add_argument("--issue", choices=("", "merge", "split", "merge_split"),
+                        default="",
+                        help="给这一批图打训练侧的毛病标签；非空时 Stem 写成 "
+                             "boundary3__<标签>__<图名>，训练脚本才会启用 "
+                             "--hard-repeat / --contact-boost / --continuity-boost")
     args = parser.parse_args()
 
     base_root = Path(args.base).resolve()
@@ -164,7 +208,8 @@ def main():
 
     records = copy_base(base_root, image_dir, mask_dir)
     records.extend(build_supplement(supplement_root, args.prefix, args.source,
-                                    args.normalization, image_dir, mask_dir, overlay_dir))
+                                    args.normalization, image_dir, mask_dir, overlay_dir,
+                                    args.supplement_split, args.issue))
 
     fields = ["Stem", "Split", "Source", "Issue", "Instances", "Width", "Height",
               "OverlapPixelsResolved"]

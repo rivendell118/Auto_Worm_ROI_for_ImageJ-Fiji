@@ -25,13 +25,15 @@ from evaluate_tip_refiner import refine_instances
 
 # Written into every batch_summary.csv row, so a test build can be told apart
 # from a release build in a bug report without asking which download was used.
-SOFTWARE_VERSION = "0.4.2-beta-imagej"
+SOFTWARE_VERSION = "0.4.3-beta-imagej"
 
-# 每一版**发行过**的低清模型指纹，新的在前。做成集合而不是单个值：0.4.2 随包带的是
-# models/0.2.1，但 0.4.1 那批已经散出去的权重（models/0.2.0）还在用，两者都得认出来。
-# 只认一个的话，拿旧权重走命令行的人会被静默当成高清，正是这条判据要防的事。界面不受
-# 影响 —— 它每次都把 low_clarity_split 显式传进来，这里只服务于命令行。
+# 每一版**发行过**的低清模型指纹，新的在前。做成集合而不是单个值：0.4.3 随包带的是
+# models/0.2.2，但 0.4.2 与 0.4.1 那两批已经散出去的权重（models/0.2.1、models/0.2.0）
+# 还在用，三个都得认出来。只认一个的话，拿旧权重走命令行的人会被静默当成高清，正是这条
+# 判据要防的事。界面不受影响 —— 它每次都把 low_clarity_split 显式传进来，这里只服务于
+# 命令行。
 LOW_CLARITY_MODEL_SHA256S = (
+    "dd5e6edc9485cbc5789870ec0bf78ac1578b5917210e1b6aab61158432eebb1a",  # 0.2.2（0.4.3）
     "afb80dc4bde0cc644ab4269bfc73463d7f20eace9592a21857ce155b8f4eed4b",  # 0.2.1（0.4.2）
     "5ce04d283a8dbc4e7b8ae460f6310627ecdfbef5feca23ace7bdbe51ef84ff3a",  # 0.2.0（0.3.3~0.4.1）
 )

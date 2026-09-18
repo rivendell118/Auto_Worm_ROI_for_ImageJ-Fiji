@@ -42,7 +42,7 @@ import java.util.zip.ZipInputStream;
 
 /** ImageJ 1.x front-end for the CUDA Auto Worm ROI engine. */
 public class Auto_Worm_ROI implements PlugIn {
-    private static final String VERSION = "0.4.2";
+    private static final String VERSION = "0.4.3";
     private static final String PREF_GUI = "autoworm.imagej.gui";
     private static final String ROI_PREFIX = "AutoWorm:";
     /**

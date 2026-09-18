@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------
-# 自动圈虫 0.4.2 CUDA for ImageJ
+# 自动圈虫 0.4.3 CUDA for ImageJ
 # 只跟踪源码、测试、模型、文档与构建依赖；产物和大体积数据不入库。
 # ---------------------------------------------------------------
 
@@ -39,7 +39,7 @@ diagnostics/test_samples/
 tests/train_data_v020/
 tests/preview/
 
-# --- 0.4.2 的训练集与训练产物（由 src/build_supplement_dataset.py 与 src/train_*.py 重建）---
+# --- 0.4.3 的训练集与训练产物（由 src/build_supplement_dataset.py 与 src/train_*.py 重建）---
 training/
 
 # --- 审查材料 ---
@@ -89,7 +89,7 @@ desktop.ini
 # 有 29 个带着本机路径，diagnostics\ 里另有 1 个（split_upperbound.py），共 30 个。
 # 它们同时是某些实验现象的唯一记录，所以是**搬走**而不是删掉。
 # 2026-09-16 从全部历史里清除，现在放在仓库外：
-#   AGENT.md -> 仓库外的 devdocs\（AGENT-0915-0.4.2.md / AGENT-0916-LLM.md）
+#   AGENT.md -> 仓库外的 devdocs\（AGENT-0918-0.4.3.md / AGENT-0916-LLM.md）
 #   30 个探针 -> 仓库外的 probes\（两个副本里这批文件逐字节相同，只留一份）
 # 下面把名字列全，是防止被顺手拷回来——**要放回来，先想清楚里面的路径怎么办**。
 AGENT.md

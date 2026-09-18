@@ -1,4 +1,4 @@
-"""给低清 0.4.2 checkpoint 盖上产品参数与出处，写出 models/0.2.1/worm.pt。
+"""给低清 0.4.3 checkpoint 盖上产品参数与出处，写出 models/0.2.2/worm.pt。
 
 与 finalize_low_model_033.py 的唯一区别：验证指标**从评测目录里读**，不在源码里写死。
 0.3.3 那份把 `supplement_validation_count_accuracy` 等数字硬编码在脚本里，数字来路只能
@@ -35,14 +35,14 @@ def evaluation_metrics(directory):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Finalize the 0.4.2 low-clarity checkpoint")
+        description="Finalize the 0.4.3 low-clarity checkpoint")
     parser.add_argument("candidate")
     parser.add_argument("output")
     parser.add_argument("--evaluation", required=True,
                         help="evaluate_worm_unet.py 的输出目录（留出集）")
     parser.add_argument("--training-dataset", required=True,
                         help="训练数据的一句话描述，写进 checkpoint 供以后追溯")
-    parser.add_argument("--software-version", default="0.4.2")
+    parser.add_argument("--software-version", default="0.4.3")
     args = parser.parse_args()
 
     checkpoint = torch.load(args.candidate, map_location="cpu")
@@ -55,7 +55,9 @@ def main():
         "postprocess_erosion": 3,
         "postprocess_min_area": 0.003,
         "postprocess_min_height": 0.10,
-        "postprocess_max_instances": 12,
+        # 12 是 0.4.2 的值，只够数 n<=12；0.4.3 的主要目标是 n 不等于 10 的情形，
+        # 补充样例5 里就有 n=19，抬到 32 才不会被候选截断卡住。
+        "postprocess_max_instances": 32,
         "normalization_mode": "background_aware",
         "software_version": args.software_version,
         "training_purpose": "low_clarity_adjacent_boundary_recognition",
@@ -66,7 +68,7 @@ def main():
     output = os.path.abspath(args.output)
     os.makedirs(os.path.dirname(output), exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
-        prefix="worm_042_", suffix=".pt", dir=os.path.dirname(output))
+        prefix="worm_043_", suffix=".pt", dir=os.path.dirname(output))
     os.close(descriptor)
     try:
         torch.save(checkpoint, temporary)

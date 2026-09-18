@@ -4,7 +4,7 @@
 >
 >该插件用于批量自动圈画线虫，生成ROI；荧光统计与 CTCF 仍交给 ImageJ/Fiji 进行。插件不改变原有的荧光统计与 CTCF 处理过程，只是将这一步自动化。
 >
->当前版本（0.4.2 CUDA for ImageJ（Java 8））是为使用NVIDIA系列显卡，且  ImageJ 内置 Java 版本为 Java 8 的用户开发的测试版。具体详见 [测试版说明](#测试版说明)
+>当前版本（0.4.3 CUDA for ImageJ（Java 8））是为使用NVIDIA系列显卡，且  ImageJ 内置 Java 版本为 Java 8 的用户开发的测试版。具体详见 [测试版说明](#测试版说明)
 >
 >本插件使用 deepseek-V4.1-flash 和 ChatGPT 5.6 sol 协助开发，由 ChatGPT 5.6 sol 和 ChatGPT 6 Astra 审查。
 
@@ -20,7 +20,7 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
 
 ## 测试版说明
 
-0.4.2 CUDA for ImageJ（Java 8）在开发机上跑通了大部分功能。但是，部分异常情况因缺乏数据仅进行了代码审查，未能进行真实数据测试。此外，可能还存在未能够考虑到的异常情况，需要用户进行反馈。
+0.4.3 CUDA for ImageJ（Java 8）在开发机上跑通了大部分功能。但是，部分异常情况因缺乏数据仅进行了代码审查，未能进行真实数据测试。此外，可能还存在未能够考虑到的异常情况，需要用户进行反馈。
 
 另外，本插件中的模型使用 NVIDIA GeForce RTX 4060 Laptop 进行训练，暂未在其他型号的 NVIDIA GPU 上进行过测试。如遇硬件兼容问题，请一并反馈。
 
@@ -47,9 +47,9 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
       models/                分割模型，外置便于单独替换
       _internal/             运行库（Python、PyTorch、CUDA、cuDNN…）
       licenses/              第三方组件许可全文
-  README_0.4.2_ImageJ_Java8.md     本文件
-  CHANGELOG_0.4.2.md
-  VALIDATION_0.4.2.md
+  README_0.4.3_ImageJ_Java8.md     本文件
+  CHANGELOG_0.4.3.md
+  VALIDATION_0.4.3.md
   LICENSE
 ```
 
@@ -313,7 +313,7 @@ NVIDIA 未对本软件作任何形式的认可或担保。使用随软件分发�
 要求 JDK，以及装有 PyInstaller、PyTorch、OpenCV、SciPy、Pillow、roifile 的 Python 环境：
 
 ```bat
-build_0.4.2.bat "完整路径\python.exe"
+build_0.4.3.bat "完整路径\python.exe"
 ```
 
 构建最后一步会把 `licenses\` 整个复制进 `dist\AutoWormImageJ\licenses\`；该目录缺失时构建报错退出，不会静默产出一个没有许可声明的包。
@@ -338,7 +338,7 @@ python make_release.py --previous-exe "<上一版的 AutoWormGUI.exe>"
 >
 >This plug-in batch-draws ROIs around nematodes automatically. Fluorescence quantification and CTCF are still performed by ImageJ/Fiji. The plug-in does not change how fluorescence is measured or how CTCF is computed; it only automates the ROI-drawing step.
 >
->The current version (0.4.2 CUDA for ImageJ (Java 8)) is a beta build for users with an NVIDIA GPU whose ImageJ runs on Java 8. See [Beta Notice](#beta-notice) for details.
+>The current version (0.4.3 CUDA for ImageJ (Java 8)) is a beta build for users with an NVIDIA GPU whose ImageJ runs on Java 8. See [Beta Notice](#beta-notice) for details.
 >
 >This plug-in was developed with the assistance of deepseek-V4.1-flash and ChatGPT 5.6 sol, and reviewed by ChatGPT 5.6 sol and ChatGPT 6 Astra.
 
@@ -354,7 +354,7 @@ This path **does not go through `Analyzer`**: `Analyzer` reads the global settin
 
 ## Beta Notice
 
-0.4.2 CUDA for ImageJ (Java 8) has most of its functionality working on the development machine. Some error paths, however, have only been code-reviewed because of a lack of data, and were not tested on real data. There may also be error conditions I have not thought of; user feedback is welcome.
+0.4.3 CUDA for ImageJ (Java 8) has most of its functionality working on the development machine. Some error paths, however, have only been code-reviewed because of a lack of data, and were not tested on real data. There may also be error conditions I have not thought of; user feedback is welcome.
 
 In addition, the models in this plug-in were trained on an NVIDIA GeForce RTX 4060 Laptop and have not been tested on other NVIDIA GPU models. If you hit hardware compatibility problems, please report them as well.
 
@@ -382,9 +382,9 @@ After extraction it should look like this:
       models/                segmentation models, external so they can be swapped individually
       _internal/             runtime libraries (Python, PyTorch, CUDA, cuDNN…)
       licenses/              full text of third-party licenses
-  README_0.4.2_ImageJ_Java8.md     this file
-  CHANGELOG_0.4.2.md
-  VALIDATION_0.4.2.md
+  README_0.4.3_ImageJ_Java8.md     this file
+  CHANGELOG_0.4.3.md
+  VALIDATION_0.4.3.md
   LICENSE
 ```
 
@@ -648,7 +648,7 @@ NVIDIA does not endorse or warrant this software in any way. When using the NVID
 Requires a JDK, and a Python environment with PyInstaller, PyTorch, OpenCV, SciPy, Pillow and roifile installed:
 
 ```bat
-build_0.4.2.bat "full path\python.exe"
+build_0.4.3.bat "full path\python.exe"
 ```
 
 The last build step copies the whole `licenses\` directory into `dist\AutoWormImageJ\licenses\`; if that directory is missing the build fails with an error rather than silently producing a package with no license notices.

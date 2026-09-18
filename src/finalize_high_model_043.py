@@ -1,16 +1,16 @@
-"""给高清 0.4.2 checkpoint 盖上产品参数与出处，写出 models/0.1.1/worm.pt。
+"""给高清 0.4.3 checkpoint 盖上产品参数与出处，写出 models/0.1.2/worm.pt。
 
-与 finalize_low_model_042.py 同构，两处不同：
+与 finalize_low_model_043.py 同构，两处不同：
 
 ① 高清的留出指标记在 `holdout_*` 前缀下，而不是 `supplement_validation_*`。
-   因为随包的高清模型是 `--train-all` 出来的（`trained_on_all_records: true`，54 张全
+   因为随包的高清模型是 `--train-all` 出来的（`trained_on_all_records: true`，58 张全
    进了训练），checkpoint 自带的 `val_*_at_best` 是**在训练集上**算的，不能当作泛化
    能力。真正没见过的只有另跑一次的 holdout 权重见过的那 4 张 —— 因此这里读的是那次
    holdout 评测的目录，指标名前缀也换掉，免得以后有人把两者混为一谈。
 
 ② tip_boost 等训练超参来自被盖戳的那个 checkpoint 本身，不在这里重复声明。
 
-低清之所以不这样：低清随包权重本身就是按 90/14 划出来的（`trained_on_all_records`
+低清之所以不这样：低清随包权重本身就是按 94/14 划出来的（`trained_on_all_records`
 为 false），它的验证集确实是留出的。
 """
 from __future__ import print_function
@@ -43,13 +43,13 @@ def evaluation_metrics(directory):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Finalize the 0.4.2 high-clarity checkpoint")
+        description="Finalize the 0.4.3 high-clarity checkpoint")
     parser.add_argument("candidate")
     parser.add_argument("output")
     parser.add_argument("--evaluation", required=True,
                         help="**留出权重的**评测目录（不是随包权重自己的评测）")
     parser.add_argument("--training-dataset", required=True)
-    parser.add_argument("--software-version", default="0.4.2")
+    parser.add_argument("--software-version", default="0.4.3")
     args = parser.parse_args()
 
     checkpoint = torch.load(args.candidate, map_location="cpu")
@@ -64,7 +64,9 @@ def main():
         "postprocess_erosion": 2,
         "postprocess_min_area": 0.012,
         "postprocess_min_height": 0.10,
-        "postprocess_max_instances": 12,
+        # 12 是 0.4.2 的值，只够数 n<=12；0.4.3 的主要目标是 n 不等于 10 的情形，
+        # 补充样例5 里就有 n=19，抬到 32 才不会被候选截断卡住。
+        "postprocess_max_instances": 32,
         "normalization_mode": "legacy",
         "software_version": args.software_version,
         "training_purpose": "high_clarity_worm_and_boundary_segmentation",
@@ -75,7 +77,7 @@ def main():
     output = os.path.abspath(args.output)
     os.makedirs(os.path.dirname(output), exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
-        prefix="worm_042_", suffix=".pt", dir=os.path.dirname(output))
+        prefix="worm_043_", suffix=".pt", dir=os.path.dirname(output))
     os.close(descriptor)
     try:
         torch.save(checkpoint, temporary)

@@ -29,7 +29,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageOps, ImageTk
 
 
-APP_VERSION = "0.4.2-beta"
+APP_VERSION = "0.4.3-beta"
 APP_DIR = Path(__file__).resolve().parent
 # 打包后 __file__ 指向 PyInstaller 解包目录,不是 exe 所在目录。
 # exe 可执行目录才是模型与配置的正确根目录。
@@ -128,15 +128,15 @@ def _write_imagej_bridge_file(
 MODEL_CONFIGS = {
     "high": {
         "label": "高清晰度图像",
-        "version": "0.1.1",
-        "checkpoint": MODEL_ROOT / "0.1.1" / "worm.pt",
-        "tip_checkpoint": MODEL_ROOT / "0.1.1" / "tip.pt",
+        "version": "0.1.2",
+        "checkpoint": MODEL_ROOT / "0.1.2" / "worm.pt",
+        "tip_checkpoint": MODEL_ROOT / "0.1.2" / "tip.pt",
     },
     "low": {
         "label": "低清晰度图像",
-        "version": "0.2.1",
-        "checkpoint": MODEL_ROOT / "0.2.1" / "worm.pt",
-        "tip_checkpoint": MODEL_ROOT / "0.2.1" / "tip.pt",
+        "version": "0.2.2",
+        "checkpoint": MODEL_ROOT / "0.2.2" / "worm.pt",
+        "tip_checkpoint": MODEL_ROOT / "0.2.2" / "tip.pt",
     },
 }
 
