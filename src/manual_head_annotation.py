@@ -379,12 +379,33 @@ def save_image_annotations(
     return destination
 
 
-def enhanced_tiff_rgb(image_path: str | os.PathLike[str]) -> Image.Image:
-    """将常见 8/16 位 TIFF 拉伸为适合监视器标注的黑白灰度图。"""
+def enhanced_tiff_rgb(image_path: str | os.PathLike[str], plane: int = 1) -> Image.Image:
+    """将常见 8/16 位 TIFF 拉伸为适合监视器标注的黑白灰度图。
+
+    ``plane`` 是 1 基的页号，默认第 1 页 —— 单页文件和老调用点因此一字不变。
+    明场ROI 开启时标注要画在明场层上，那一层不是第 1 页。
+    """
+    plane = int(plane)
+    if plane < 1:
+        raise ValueError("plane is 1-based: %d was given" % plane)
     # image_array, not np.asarray: plain asarray turns a 16-bit big-endian TIFF
     # into the wrong numbers, and the annotation view must show the same pixels
     # the engine segments.
     with Image.open(image_path) as opened:
+        if plane > 1:
+            try:
+                frame_count = opened.n_frames
+            except Exception:
+                frame_count = 1
+            if plane > frame_count:
+                raise ValueError("%s 只有 %d 层，没有第 %d 层" %
+                                 (os.path.basename(str(image_path)), frame_count, plane))
+            opened.seek(plane - 1)
+            if opened.tell() != plane - 1:
+                # 与 batch 里的 select_plane 同一条防线：seek「成功」却留在原页
+                # 不会报错，只会让标注画在另一张图上。
+                raise ValueError("%s 无法定位到第 %d 层" %
+                                 (os.path.basename(str(image_path)), plane))
         array = image_array(opened)
     if array.ndim == 3:
         if array.shape[2] >= 3:

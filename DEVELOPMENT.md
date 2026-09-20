@@ -1,11 +1,11 @@
 # 开发说明
 
-面向改这个仓库的人。用户读的文档是 `README_0.4.3_ImageJ_Java8.md`，本文件只管开发侧。
+面向改这个仓库的人。用户读的文档是 `README_0.5.0_ImageJ_Java8.md`，本文件只管开发侧。
 
 **完整的交接文档不在本仓库里**，在工作区中与仓库同级目录往上一层的 `devdocs\`：
 
 ```text
-..\..\devdocs\AGENT-0918-0.4.3.md
+..\..\devdocs\AGENT-0919-0.5.0.md
 ```
 
 那份文档有项目背景、三层架构与数据流、逐轮改动记录、已知限制、环境坑，以及**为什么某些
@@ -49,7 +49,7 @@ Python 2.7，连 `pathlib` 都没有，报错会以各种莫名其妙的方式�
 
 ```bat
 set PATH=<JDK 21>\bin;%PATH%
-build_0.4.3.bat "<venv python>"
+build_0.5.0.bat "<venv python>"
 ```
 
 四步：`javac` + `jar` → PyInstaller（`gui_imagej.spec`）→ `postbuild.py`（同步 MSVC 运行库、

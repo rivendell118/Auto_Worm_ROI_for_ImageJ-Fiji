@@ -42,7 +42,7 @@ import java.util.zip.ZipInputStream;
 
 /** ImageJ 1.x front-end for the CUDA Auto Worm ROI engine. */
 public class Auto_Worm_ROI implements PlugIn {
-    private static final String VERSION = "0.4.3";
+    private static final String VERSION = "0.5.0";
     private static final String PREF_GUI = "autoworm.imagej.gui";
     private static final String ROI_PREFIX = "AutoWorm:";
     /**
@@ -56,6 +56,15 @@ public class Auto_Worm_ROI implements PlugIn {
      */
     private static final String MEASUREMENTS_DIR = "measurements";
     private static final String OTHER_DIR = "other";
+    /**
+     * Which bridge the GUI program is talking to, passed to it as an environment
+     * variable. Bump this whenever a field is added to the notification that an
+     * older GUI would have to send a different value for. The GUI-side twin is
+     * IMAGEJ_BRIDGE_PROTOCOL in worm_roi_gui.py; the two are compared as strings.
+     */
+    private static final String BRIDGE_PROTOCOL = "2";
+    private static final String BRIDGE_PROTOCOL_VAR = "AUTOWORM_IMAGEJ_BRIDGE_PROTOCOL";
+    private static final String MEASURED_PLANE_KEY = "measured_plane";
     private static final int MEASURES = Measurements.AREA | Measurements.MEAN |
             Measurements.MIN_MAX | Measurements.INTEGRATED_DENSITY | Measurements.MEDIAN;
 
@@ -90,6 +99,12 @@ public class Auto_Worm_ROI implements PlugIn {
         builder.redirectErrorStream(true);
         builder.environment().put("AUTOWORM_IMAGEJ_MODE", "1");
         builder.environment().put("AUTOWORM_IMAGEJ_BRIDGE_DIR", bridge.toString());
+        // Which bridge this jar speaks. The GUI refuses to run the brightfield
+        // feature against an older jar: a jar that does not know about the plane
+        // field measures slice 1 of every stack, which is a wrong number in every
+        // row and looks exactly like a right one. An older jar sets no such
+        // variable, so the GUI reads an empty string and knows to stop.
+        builder.environment().put("AUTOWORM_IMAGEJ_BRIDGE_PROTOCOL", BRIDGE_PROTOCOL);
         IJ.log("[Auto Worm] Original UI: " + gui);
         IJ.showStatus("The GUI has been opened. Please perform image processing in it.");
         final Process process = builder.start();
@@ -135,7 +150,8 @@ public class Auto_Worm_ROI implements PlugIn {
                         ImagePlus current = WindowManager.getCurrentImage();
                         File currentFile = savedTiff(current);
                         measureOutputFolder(inputFolder, outputFolder, currentFile,
-                                finishedImages, true, true);
+                                finishedImages, true, true,
+                                plane(values, MEASURED_PLANE_KEY));
                         measured = true;
                         IJ.showStatus("Measurement complete. The GUI stays open; you can process another folder.");
                     } catch (Exception error) {
@@ -668,9 +684,49 @@ public class Auto_Worm_ROI implements PlugIn {
                 table.getName());
     }
 
+    /**
+     * The plane number out of a notification, or 1 when it is absent or unusable.
+     *
+     * A missing key means 1 on purpose. Notifications from 0.4.3 and earlier
+     * interfaces carry no plane field at all, and the behaviour those versions
+     * had was to measure slice 1; a reading of the file that quietly meant
+     * something else would make the two versions disagree about numbers neither
+     * of them flags.
+     */
+    private static int plane(Properties values, String key) {
+        String text = values.getProperty(key, "");
+        try {
+            int number = Integer.parseInt(text.trim());
+            return number >= 1 ? number : 1;
+        } catch (NumberFormatException notANumber) {
+            if (!text.isEmpty()) IJ.log("[Auto Worm] 桥接通知里的 " + key +
+                    " 无法解析，按第 1 层处理：" + text);
+            return 1;
+        }
+    }
+
+    /**
+     * Measures every image of a batch out of plane 1, as every version before
+     * this one did. Kept so the callers that have no plane to give -- and the
+     * tests -- keep reading the way they did.
+     */
     static void measureOutputFolder(File inputFolder, File outputFolder,
                                     File activeFile, Set<String> finishedImages,
                                     boolean addToManager, boolean showQc) throws Exception {
+        measureOutputFolder(inputFolder, outputFolder, activeFile, finishedImages,
+                addToManager, showQc, 1);
+    }
+
+    /**
+     * The same pass, measuring plane {@code measuredPlane} of each image.
+     *
+     * The plane is a file's flat page order, the same count Pillow reports as
+     * n_frames, because that is what the GUI chose the plane by.
+     */
+    static void measureOutputFolder(File inputFolder, File outputFolder,
+                                    File activeFile, Set<String> finishedImages,
+                                    boolean addToManager, boolean showQc,
+                                    int measuredPlane) throws Exception {
         if (!inputFolder.isDirectory()) throw new IOException("输入文件夹不存在：" + inputFolder);
         if (!outputFolder.isDirectory()) throw new IOException("输出文件夹不存在：" + outputFolder);
         // The output folder holds the two subfolders the GUI program fills in.
@@ -709,6 +765,10 @@ public class Auto_Worm_ROI implements PlugIn {
                 continue;
             }
             try {
+                if (!selectMeasuredPlane(image, input.getName(), measuredPlane)) {
+                    skipped++;
+                    continue;
+                }
                 if (measured == 0) {
                     // Said once per batch: what each row was measured with is in
                     // the table itself (the calibration columns), but a log read
@@ -771,6 +831,41 @@ public class Auto_Worm_ROI implements PlugIn {
         IJ.log("自动圈虫 " + VERSION + "：处理完成：" + measured + " 张图像；测量后端：ImageJ " +
                 IJ.getVersion() + "；测量表：" + measurementsDir + "；ROI 与 QC 图：" + otherDir +
                 (skipped > 0 ? "；跳过 " + skipped + " 张（见上方日志）" : ""));
+    }
+
+    /**
+     * Positions an image on the plane to be measured. False means it cannot be.
+     *
+     * A single-plane image is left alone whatever the number says: the plane
+     * number has nothing to choose between there, and a folder holding both
+     * single-plane and multi-plane images is the normal case for the brightfield
+     * option, not an error.
+     *
+     * A number past the end skips the image instead of measuring what is there.
+     * Measuring the wrong plane yields a set of numbers that look entirely
+     * ordinary, which is the very outcome this version's whole plane-handling
+     * exists to prevent; a skipped image is named in the log and left out of the
+     * combined table.
+     *
+     * setRoi is stack-wide and getStatistics reads the current slice, so
+     * selecting here is enough -- nothing inside measureOne has to know about
+     * planes at all.
+     */
+    private static boolean selectMeasuredPlane(ImagePlus image, String name, int measuredPlane) {
+        int planes = image.getStackSize();
+        if (planes <= 1 || measuredPlane <= 1) return true;
+        if (measuredPlane > planes) {
+            IJ.log("[Auto Worm] " + name + " 只有 " + planes + " 层，没有第 " + measuredPlane +
+                    " 层，跳过测量。");
+            return false;
+        }
+        image.setSlice(measuredPlane);
+        if (image.getSlice() != measuredPlane) {
+            IJ.log("[Auto Worm] " + name + " 无法定位到第 " + measuredPlane + " 层（停在第 " +
+                    image.getSlice() + " 层），跳过测量。");
+            return false;
+        }
+        return true;
     }
 
     private static String decode(String encoded) {

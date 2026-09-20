@@ -7,7 +7,7 @@ to be unpacked into the Fiji root, where ImageJ-win64.exe is:
     plugins/Auto_Worm_ROI.jar
     plugins/AutoWormImageJ/AutoWormGUI.exe
     plugins/AutoWormImageJ/{models,_internal,licenses}/...
-    README_0.4.3_ImageJ_Java8.md  CHANGELOG_0.4.3.md  VALIDATION_0.4.3.md  LICENSE
+    README_0.5.0_ImageJ_Java8.md  CHANGELOG_0.5.0.md  VALIDATION_0.5.0.md  LICENSE
 
 Four checks run before anything is packed, because each one covers a mistake
 that produces a zip which looks completely normal:
@@ -32,7 +32,7 @@ version check used to read plugin_src/plugins.config, which is the file that
 would be edited by hand and is present whether or not the jar was rebuilt, so
 it could not catch that either; it now reads the copy inside the jar.
 
-Run it with the build interpreter, after build_0.4.3.bat:
+Run it with the build interpreter, after build_0.5.0.bat:
 
     <build python> make_release.py [--previous-exe <old AutoWormGUI.exe>]
 """
@@ -61,7 +61,7 @@ PLUGIN_CONFIG = PLUGIN_SRC / "plugins.config"
 IJ_JAR = ROOT / "lib" / "ij.jar"
 RELEASE_ROOT = ROOT / "release"
 
-# Exactly the arguments build_0.4.3.bat compiles the plug-in with. They are
+# Exactly the arguments build_0.5.0.bat compiles the plug-in with. They are
 # repeated here rather than shared, because the comparison is only meaningful
 # when the release script recompiles the same way the build did -- a different
 # --release target changes the emitted bytecode and the check would then report
@@ -87,8 +87,8 @@ VERSION_PATTERN = re.compile(r'"Auto Worm ROI ([0-9][^"]*)"')
 JAR_NAME = "Auto_Worm_ROI.jar"
 PACKAGED_GUI_DIR = "AutoWormImageJ"
 
-# The docs that sit at the top of the zip. The numeric release ("0.4.3") is
-# what the file names carry, the full version ("0.4.3-beta") what the zip does.
+# The docs that sit at the top of the zip. The numeric release ("0.5.0") is
+# what the file names carry, the full version ("0.5.0-beta") what the zip does.
 DOC_NAMES = ("README_%s_ImageJ_Java8.md", "CHANGELOG_%s.md", "VALIDATION_%s.md")
 
 
@@ -458,7 +458,11 @@ def compile_plugin_to(destination):
         raise SystemExit("no Java sources under %s" % PLUGIN_SRC)
     command = ["javac"] + list(JAVAC_FLAGS) + [
         "-cp", str(IJ_JAR), "-d", str(destination)] + units
-    completed = subprocess.run(command, capture_output=True, text=True)
+    # errors="replace": javac 的警告走系统编码（中文 Windows 上是 GBK），不是 UTF-8。
+    # 不加这一条，读取线程会在解码时抛 UnicodeDecodeError，把 stderr 整个丢掉——
+    # 编译成功时只是少一行警告，**编译失败时 `completed.stderr` 是 None，报错信息全没**。
+    completed = subprocess.run(command, capture_output=True, text=True,
+                               errors="replace")
     if completed.returncode != 0:
         raise SystemExit("javac failed while checking the jar:\n%s%s"
                          % (completed.stdout, completed.stderr))
@@ -522,7 +526,7 @@ def compare_jar_to_source():
 def report_jar_comparison(verbose):
     problems, notes = compare_jar_to_source()
     print("Checking that the jar is the current Java source.")
-    print("(plugin_src/*.java is recompiled the way build_0.4.3.bat compiles")
+    print("(plugin_src/*.java is recompiled the way build_0.5.0.bat compiles")
     print(" it, and every class is compared with the one in the jar: constant")
     print(" pool, methods and bytecode. Line numbers, local variable names and")
     print(" other source metadata do not count.)")
@@ -611,7 +615,7 @@ def main():
     problems, docs = check_version_agreement(version)
 
     if not (DIST / JAR_NAME).is_file():
-        problems.append("missing %s -- run build_0.4.3.bat first" % (DIST / JAR_NAME))
+        problems.append("missing %s -- run build_0.5.0.bat first" % (DIST / JAR_NAME))
     if not (GUI_DIR / "AutoWormGUI.exe").is_file():
         problems.append("missing %s" % (GUI_DIR / "AutoWormGUI.exe"))
     for required in ("models", "licenses", "_internal"):
@@ -636,7 +640,7 @@ def main():
         if jar_problems:
             print(file=sys.stderr)
             print("ERROR: the jar does not match plugin_src/. Rebuild with "
-                  "build_0.4.3.bat before releasing: the zip would ship Java "
+                  "build_0.5.0.bat before releasing: the zip would ship Java "
                   "code that is no longer in the sources.", file=sys.stderr)
             return 1
 
@@ -655,7 +659,7 @@ def main():
             print(file=sys.stderr)
             print("ERROR: the built EXE does not match src/ for: %s"
                   % ", ".join(differing), file=sys.stderr)
-            print("       Rebuild with build_0.4.3.bat before releasing: the zip "
+            print("       Rebuild with build_0.5.0.bat before releasing: the zip "
                   "would ship the old code.", file=sys.stderr)
             return 1
         if not matching:

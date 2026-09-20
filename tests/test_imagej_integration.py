@@ -20,18 +20,29 @@ sys.path.insert(0, str(ROOT / "src"))
 from batch_worm_roi import (IMAGEJ_MEASUREMENT_COLUMNS, IMAGE_OUTPUT_FILES,
                             MEASUREMENTS_DIRNAME, OTHER_DIRNAME,
                             PYTHON_MEASUREMENT_HEADER, RUN_COLUMNS, SOFTWARE_VERSION,
-                            _reject_unsupported_images, _remove_stale_imagej_report,
-                            _remove_stale_report, _success_row, _write_csv_atomic,
-                            check_image, find_stem_collisions, measurement_row,
-                            process_image, run_gui_batch)
+                            BrightfieldRoi, _reject_unsupported_images,
+                            _remove_stale_imagej_report, _remove_stale_report,
+                            _success_row, _write_csv_atomic, check_image,
+                            find_stem_collisions, measurement_row, process_image,
+                            run_gui_batch)
 import worm_roi_gui
 from inspect_roi_dataset import image_array
 from manual_head_annotation import (HEAD_REPORT_FIELDS, MANUAL_SPLIT_REPORT_FIELDS,
-                                    load_image_annotations,
+                                    enhanced_tiff_rgb, load_image_annotations,
                                     load_image_boundary_guides,
                                     load_image_exclusion_regions)
 from worm_segment_selector import SEGMENT_REPORT_FIELDS
 from worm_shape_refiner import ShapeReport, write_shape_report
+
+
+class _FakeVar:
+    """Stand-in for a tk variable in the GUI stubs: only .get() is ever called."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def get(self):
+        return self._value
 
 
 def _synthetic_case(folder: Path):
@@ -75,7 +86,9 @@ class ImageJIntegrationTests(unittest.TestCase):
                 result = process_image(
                     image, output, model=None, device=None, standard_count=1,
                     measurement_backend="imagej")
-            self.assertEqual(result[-1], "imagej")
+            # measurement_backend is the last data column; the three brightfield
+            # ones sit after it, so it is counted from the end.
+            self.assertEqual(result[-4], "imagej")
             self.assertTrue((output / OTHER_DIRNAME / "one_RoiSet.zip").is_file())
             self.assertFalse((output / MEASUREMENTS_DIRNAME / "one_measurements.csv").exists())
 
@@ -416,10 +429,10 @@ class BatchFailureHandlingTests(unittest.TestCase):
             name = os.path.basename(str(path))
             if name in fail_on:
                 raise RuntimeError("boom in " + name)
-            # 29 fields, the real process_image return value. _success_row refuses
+            # 32 fields, the real process_image return value. _success_row refuses
             # any other length and _summary_rows checks every row against the
             # header, so this cannot drift unnoticed.
-            return [name, 10, 10, "PASS"] + [""] * 25
+            return [name, 10, 10, "PASS"] + [""] * 28
 
         for name in ("worm.pt", "tip.pt"):
             (folder / name).write_bytes(b"stub checkpoint")
@@ -523,11 +536,12 @@ class BatchFailureHandlingTests(unittest.TestCase):
     def test_a_row_builder_refuses_a_result_the_header_cannot_hold(self):
         """A short row is the silent failure mode, so the row builder rejects one."""
         header = ["image", "worm_count"] + list(RUN_COLUMNS)
-        run_values = ("run", "cpu", "FP32", "worm-sha", "tip-sha", "0.4.0-imagej", "")
+        run_values = ("run", "cpu", "FP32", "worm-sha", "bf-sha", "tip-sha",
+                      "0.4.0-imagej", "")
 
         self.assertEqual(_success_row(header, ["ok.tif", 10], run_values),
-                         ["ok.tif", 10, "run", "cpu", "FP32", "worm-sha", "tip-sha",
-                          "0.4.0-imagej", ""])
+                         ["ok.tif", 10, "run", "cpu", "FP32", "worm-sha", "bf-sha",
+                          "tip-sha", "0.4.0-imagej", ""])
         for wrong in (["ok.tif"], ["ok.tif", 10, "extra"]):
             with self.assertRaises(ValueError):
                 _success_row(header, wrong, run_values)
@@ -724,6 +738,7 @@ class ImageJBridgeNotificationTests(unittest.TestCase):
         class Stub:
             qc_status = {}
             qc_attention = {}
+            qc_planes = {}
 
         with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
             output = Path(folder)
@@ -857,6 +872,7 @@ class ImageJBridgeNotificationTests(unittest.TestCase):
                 self.annotation_path = None
                 self.last_valid_worm_count = None
                 self.current_folder = Path(tempfile.gettempdir()) / "aw-gone-folder"
+                self.brightfield_roi_var = _FakeVar(False)
                 self.said = []
 
             def _tr(self, chinese, english):
@@ -934,8 +950,8 @@ class ImageJBridgeNotificationTests(unittest.TestCase):
                 pass
 
             def _notify_imagej(self, status, input_dir, output_dir, message="",
-                               successful_images=None):
-                self.sent.append((status, message, successful_images))
+                               successful_images=None, planes=(1, 1)):
+                self.sent.append((status, message, successful_images, planes))
 
         # Two of the three finished before the stop: those two are what Fiji can
         # measure, and the third must not be in the list.
@@ -943,17 +959,20 @@ class ImageJBridgeNotificationTests(unittest.TestCase):
         with patch.object(worm_roi_gui, "IMAGEJ_BRIDGE_DIR", "bridge"):
             self.assertFalse(stub._processing_finished(-1))
         self.assertEqual(len(stub.sent), 1, stub.sent)
-        status, message, images = stub.sent[0]
+        status, message, images, planes = stub.sent[0]
         self.assertEqual(status, "complete")
         self.assertEqual(images, ["a.tif", "b.tif"])
         self.assertIn("2", message)
+        # Brightfield ROI off: the plug-in is told to measure plane 1, which is
+        # what it measured before this field existed.
+        self.assertEqual(planes, (1, 1))
 
         # A batch stopped before anything finished has nothing to measure, and
         # says so the way the plug-in has always understood.
         stub = Stub(set())
         with patch.object(worm_roi_gui, "IMAGEJ_BRIDGE_DIR", "bridge"):
             self.assertFalse(stub._processing_finished(-1))
-        self.assertEqual(stub.sent, [("cancelled", "", None)])
+        self.assertEqual(stub.sent, [("cancelled", "", None, (1, 1))])
 
     def test_only_finished_narrows_the_list_to_what_was_completed(self):
         # The list the GUI can vouch for: a stem whose progress line it has seen,
@@ -1361,6 +1380,362 @@ class DatasetInspectionTests(unittest.TestCase):
                              "one bad image cost the others their report")
 
 
+class BrightfieldRoiTests(unittest.TestCase):
+    """0.5.0: the brightfield plane makes the ROIs, the fluorescence one the numbers.
+
+    Every test here is about the pairing staying intact. The failure this feature
+    could introduce is not a crash but a plausible number measured from the wrong
+    plane, which nothing downstream can detect -- so the two planes used in the
+    fixtures differ in both base level and location of their bright block, and a
+    test that swapped them would produce visibly different pixels.
+    """
+
+    def _stack(self, folder, name, planes):
+        path = folder / name
+        images = [Image.fromarray(plane) for plane in planes]
+        images[0].save(path, save_all=True, append_images=images[1:])
+        return path
+
+    def _two_planes(self, folder, name="two_planes.tif"):
+        """(path, fluorescence, brightfield) for a 2-plane file.
+
+        Plane 1 is the fluorescence image: bright base, bright block top-left.
+        Plane 2 is the brightfield one: dark base, bright block bottom-right.
+        """
+        fluorescence = np.full((64, 64), 1000, np.uint16)
+        fluorescence[2:12, 2:12] = 4000
+        brightfield = np.full((64, 64), 10, np.uint16)
+        brightfield[52:62, 52:62] = 4000
+        return self._stack(folder, name, [fluorescence, brightfield]), fluorescence, brightfield
+
+    @staticmethod
+    def _brightfield_roi(model="brightfield weights"):
+        return BrightfieldRoi(
+            model=model, tip_model=None, image_size=256,
+            normalization_mode="background_aware", tip_patch_size=192,
+            tip_probability_threshold=0.40, tip_replace_fraction=0.14)
+
+    @staticmethod
+    def _fake_predict(seen, labels):
+        """A predict_raw stand-in that records the pixels it was handed."""
+        def fake_predict(model, raw, device, **kwargs):
+            seen.append((model, np.array(raw)))
+            return (labels,
+                    (raw.astype(np.float32) / float(raw.max()) * 255).astype(np.uint8),
+                    None)
+        return fake_predict
+
+    @staticmethod
+    def _qc_pixels(path):
+        """A QC image with its text banner cut off.
+
+        The banner is drawn from the QC status and the worm counts, not from the
+        picture underneath, so comparing it would add a second way for these
+        assertions to break without saying anything about the plane.
+        """
+        with Image.open(path) as opened:
+            return np.asarray(opened.convert("RGB"))[40:].copy()
+
+    def test_brightfield_off_refuses_a_stack_and_names_the_feature(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            self._two_planes(folder)
+            output = folder / "out"
+
+            with self.assertRaises(ValueError) as caught:
+                run_gui_batch(str(folder), str(output), "worm.pt", "tip.pt")
+
+            text = str(caught.exception)
+            self.assertIn("two_planes.tif", text)
+            self.assertIn("Brightfield", text)
+            self.assertFalse(output.exists(),
+                             "output was written for a batch that was refused")
+
+    def test_brightfield_segments_the_brightfield_plane_and_measures_the_fluorescence_plane(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            stack, fluorescence, brightfield = self._two_planes(folder)
+            output = folder / "out"
+            output.mkdir()
+            labels = np.zeros((64, 64), np.uint16)
+            labels[15:50, 25:40] = 1
+            seen = []
+
+            with patch("batch_worm_roi.predict_raw",
+                       side_effect=self._fake_predict(seen, labels)):
+                result = process_image(
+                    stack, output, model="fluorescence weights", device=None,
+                    standard_count=1, fluorescence_plane=1, brightfield_plane=2,
+                    brightfield_roi=self._brightfield_roi())
+
+            # The segmentation ran on the brightfield weights and on plane 2's
+            # pixels, compared against the array that was written to plane 2
+            # rather than against a summary of it -- the two planes differ only in
+            # where their bright block sits, so a base-level check alone could not
+            # tell them apart.
+            self.assertEqual(seen[0][0], "brightfield weights")
+            self.assertTrue(np.array_equal(seen[0][1], brightfield),
+                            "the segmentation input was not the brightfield plane")
+
+            # The numbers came from plane 1. The ROI sits in plane 1's bright base.
+            with (output / MEASUREMENTS_DIRNAME /
+                  "two_planes_measurements.csv").open(
+                      newline="", encoding="utf-8-sig") as handle:
+                rows = list(csv.DictReader(handle))
+            worm = [row for row in rows if row["Type"] == "worm"]
+            self.assertEqual(len(worm), 1, rows)
+            self.assertEqual(float(worm[0]["Mean"]), 1000.0,
+                             "the numbers did not come from the fluorescence plane")
+
+            # The QC is the brightfield plane. Proved by construction rather than
+            # by eyeballing: the same labels over a file holding only plane 2 give
+            # a pixel-identical picture, and over a file holding only plane 1 a
+            # different one.
+            controls = {}
+            for name, plane in (("brightfield_only", brightfield),
+                                ("fluorescence_only", fluorescence)):
+                source = folder / (name + ".tif")
+                Image.fromarray(plane).save(source)
+                control_output = folder / ("out_" + name)
+                control_output.mkdir()
+                with patch("batch_worm_roi.predict_raw",
+                           side_effect=self._fake_predict([], labels)):
+                    process_image(source, control_output, model="fluorescence weights",
+                                  device=None, standard_count=1)
+                controls[name] = self._qc_pixels(
+                    control_output / OTHER_DIRNAME / (name + "_QC.png"))
+
+            from_stack = self._qc_pixels(output / OTHER_DIRNAME / "two_planes_QC.png")
+            self.assertTrue(
+                np.array_equal(from_stack, controls["brightfield_only"]),
+                "the QC was not drawn on the brightfield plane")
+            self.assertFalse(
+                np.array_equal(from_stack, controls["fluorescence_only"]),
+                "the QC came from the fluorescence plane, which requirement 2 forbids")
+
+            # The last three fields say which plane each half of the run used, and
+            # that the feature was on. The monitor and the summary both read them.
+            self.assertEqual(result[-3:], [1, 2, 1])
+
+    def test_a_single_plane_tiff_is_still_processed_when_brightfield_is_on(self):
+        # Decision 2: a folder holding both kinds is normal, and a single-plane
+        # file has nothing to choose between -- it runs on the main model, takes
+        # both its ROI and its numbers from its only plane, and says so.
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            stack, _, _ = self._two_planes(folder)
+            single = folder / "single.tif"
+            Image.fromarray(np.full((64, 64), 700, np.uint16)).save(single)
+            output = folder / "out"
+            output.mkdir()
+            labels = np.zeros((64, 64), np.uint16)
+            labels[15:50, 25:40] = 1
+            seen = []
+
+            with patch("batch_worm_roi.predict_raw",
+                       side_effect=self._fake_predict(seen, labels)):
+                stacked = process_image(
+                    stack, output, model="fluorescence weights", device=None,
+                    standard_count=1, fluorescence_plane=1, brightfield_plane=2,
+                    brightfield_roi=self._brightfield_roi())
+                alone = process_image(
+                    single, output, model="fluorescence weights", device=None,
+                    standard_count=1, fluorescence_plane=1, brightfield_plane=2,
+                    brightfield_roi=self._brightfield_roi())
+
+            self.assertEqual(seen[0][0], "brightfield weights")
+            self.assertEqual(seen[1][0], "fluorescence weights",
+                             "the single-plane file was segmented by the brightfield model")
+            self.assertEqual(int(seen[1][1].min()), 700)
+
+            self.assertEqual(stacked[-3:], [1, 2, 1])
+            self.assertEqual(alone[-3:], [1, 1, 1],
+                             "a single-plane file reported a plane it does not have")
+
+    def test_a_plane_the_file_does_not_have_is_refused_and_named(self):
+        """Out-of-range planes stop the run instead of measuring something else.
+
+        The batch guard catches this before any file is touched, so the whole
+        folder is refused rather than one image failing quietly; process_image
+        carries the same check for callers that use it on a single file.
+        """
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            stack, _, _ = self._two_planes(folder)
+            output = folder / "out"
+
+            with self.assertRaises(ValueError) as caught:
+                run_gui_batch(str(folder), str(output), "worm.pt", "tip.pt",
+                              brightfield_roi=True, fluorescence_plane=1,
+                              brightfield_plane=4)
+            self.assertIn("two_planes.tif", str(caught.exception))
+            self.assertIn("4", str(caught.exception))
+            self.assertFalse(output.exists())
+
+            output.mkdir()
+            seen = []
+            with patch("batch_worm_roi.predict_raw", side_effect=self._fake_predict(
+                    seen, np.zeros((64, 64), np.uint16))):
+                with self.assertRaises(ValueError) as caught:
+                    process_image(stack, output, model="fluorescence weights",
+                                  device=None, standard_count=1,
+                                  fluorescence_plane=1, brightfield_plane=4,
+                                  brightfield_roi=self._brightfield_roi())
+            self.assertIn("two_planes.tif", str(caught.exception))
+            self.assertEqual(seen, [], "a file was segmented after the plane check failed")
+
+    def test_a_brightfield_model_is_required_and_never_falls_back(self):
+        # The one outcome nothing downstream can detect: a brightfield acquisition
+        # segmented by weights trained on fluorescence gives ROIs that look
+        # entirely reasonable and are not. So a missing checkpoint stops the batch
+        # before a single file is opened.
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            self._two_planes(folder)
+            for name in ("worm.pt", "tip.pt"):
+                (folder / name).write_bytes(b"stub checkpoint")
+            output = folder / "out"
+
+            def refuse_to_predict(*args, **kwargs):
+                raise AssertionError("predict_raw ran without brightfield weights")
+
+            with patch("batch_worm_roi.torch.load", return_value={"model_state": {}}), \
+                    patch("batch_worm_roi.WormUNet"), \
+                    patch("batch_worm_roi.predict_raw", side_effect=refuse_to_predict):
+                with self.assertRaises(FileNotFoundError) as caught:
+                    run_gui_batch(
+                        str(folder), str(output), str(folder / "worm.pt"),
+                        str(folder / "tip.pt"), disable_tip_refinement=True,
+                        brightfield_roi=True, fluorescence_plane=1,
+                        brightfield_plane=2,
+                        brightfield_checkpoint_path=str(folder / "not_there.pt"),
+                        brightfield_tip_checkpoint_path=str(folder / "not_there_tip.pt"))
+            self.assertIn("Brightfield checkpoint not found", str(caught.exception))
+
+    def test_run_gui_batch_wires_the_planes_into_the_summary(self):
+        # The summary is what the monitor and the ImageJ bridge both read, so the
+        # three new columns have to be filled from this batch's planes and not
+        # from whatever the window happens to have configured. The stand-in builds
+        # its own last three fields out of the keywords it is called with, which
+        # makes the row a record of what reached the per-image call rather than a
+        # copy of what the test expects.
+        calls = []
+
+        def fake_process_image(path, *args, **kwargs):
+            calls.append(kwargs)
+            roi = kwargs.get("brightfield_roi")
+            return [os.path.basename(str(path)), 1, 1, "PASS"] + [""] * 25 + [
+                int(roi is not None),
+                kwargs.get("brightfield_plane", 1) if roi is not None else 1,
+                kwargs.get("fluorescence_plane", 1) if roi is not None else 1]
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            self._two_planes(folder)
+            for name in ("worm.pt", "tip.pt", "bf.pt", "bf_tip.pt"):
+                (folder / name).write_bytes(b"stub checkpoint")
+            output = folder / "out"
+
+            with patch("batch_worm_roi.torch.load", return_value={"model_state": {}}), \
+                    patch("batch_worm_roi.WormUNet"), \
+                    patch("batch_worm_roi.process_image", side_effect=fake_process_image):
+                run_gui_batch(
+                    str(folder), str(output), str(folder / "worm.pt"),
+                    str(folder / "tip.pt"), disable_tip_refinement=True,
+                    brightfield_roi=True, fluorescence_plane=2, brightfield_plane=1,
+                    brightfield_checkpoint_path=str(folder / "bf.pt"),
+                    brightfield_tip_checkpoint_path=str(folder / "bf_tip.pt"))
+
+            with (output / OTHER_DIRNAME / "batch_summary.csv").open(
+                    newline="", encoding="utf-8-sig") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1, rows)
+            self.assertEqual(rows[0]["brightfield_roi_enabled"], "1")
+            self.assertEqual(rows[0]["qc_plane"], "1")
+            self.assertEqual(rows[0]["measured_plane"], "2")
+            # And the planes reached the image itself: a summary filled in
+            # correctly while process_image was told something else would describe
+            # a run that never happened.
+            self.assertEqual(len(calls), 1, calls)
+            self.assertEqual(calls[0]["fluorescence_plane"], 2)
+            self.assertEqual(calls[0]["brightfield_plane"], 1)
+            self.assertIsNotNone(calls[0]["brightfield_roi"])
+
+    def test_the_monitor_caption_names_the_plane(self):
+        class Stub:
+            current_folder = Path("C:/images")
+            qc_planes = {"two_planes.tif": (2, 1), "single.tif": (1, 1)}
+            _planes_for_qc = worm_roi_gui.WormRoiGui._planes_for_qc
+
+            def _source_path_for_qc(self, qc_path):
+                return None
+
+            def _tr(self, chinese, english):
+                return chinese
+
+        label = worm_roi_gui.WormRoiGui._source_label_for_qc(
+            Stub(), Path("two_planes_QC.png"))
+        self.assertIn("第 2 层", label)
+        self.assertIn("明场", label)
+
+        # A single-plane file of the same batch has no plane to name: its QC came
+        # from plane 1 like every other single-plane run, so calling it a
+        # brightfield QC would be inventing a fact.
+        plain = worm_roi_gui.WormRoiGui._source_label_for_qc(
+            Stub(), Path("single_QC.png"))
+        self.assertNotIn("明场", plain)
+
+    def test_brightfield_roi_is_refused_against_an_old_bridge_protocol(self):
+        # New window, old jar: the plug-in does not know about plane numbers and
+        # would measure slice 1 of every image. With Brightfield ROI on, every row
+        # would then be silently wrong, so the run is refused before it starts.
+        class Stub:
+            _start_processing = worm_roi_gui.WormRoiGui._start_processing
+
+            def __init__(self):
+                self.process = None
+                self.root = None
+                self.brightfield_roi_var = _FakeVar(True)
+                self.said = []
+
+            def _tr(self, chinese, english):
+                return chinese
+
+            def _terminal_write(self, text, tag):
+                self.said.append(text)
+
+        stub = Stub()
+        with patch.object(worm_roi_gui, "IMAGEJ_MEASUREMENT_MODE", True), \
+                patch.object(worm_roi_gui, "IMAGEJ_BRIDGE_PROTOCOL", ""), \
+                patch.object(worm_roi_gui.messagebox, "showerror") as showerror, \
+                patch.object(worm_roi_gui.messagebox, "showinfo") as showinfo:
+            stub._start_processing()
+
+        showerror.assert_called_once()
+        self.assertIn("同版本", showerror.call_args[0][0])
+        showinfo.assert_not_called()
+        self.assertEqual(stub.said, [], "the batch was started anyway")
+
+    def test_enhanced_tiff_rgb_reads_the_requested_plane(self):
+        # The annotation view is drawn on the brightfield plane, which is not
+        # plane 1. The default has to stay plane 1 for every older caller.
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as folder:
+            folder = Path(folder)
+            path = self._stack(folder, "annotate.tif", [
+                np.full((32, 32), 0, np.uint8),
+                np.full((32, 32), 200, np.uint8),
+            ])
+            first = np.asarray(enhanced_tiff_rgb(path))
+            second = np.asarray(enhanced_tiff_rgb(path, plane=2))
+            self.assertGreater(int(second.max()), int(first.max()),
+                               "plane 2 was not the one that was read")
+            self.assertTrue(np.array_equal(first, np.asarray(enhanced_tiff_rgb(path, 1))))
+
+            with self.assertRaises(ValueError) as caught:
+                enhanced_tiff_rgb(path, plane=3)
+            self.assertIn("annotate.tif", str(caught.exception))
+
+
 class SuiteIntegrityTests(unittest.TestCase):
     """The suite must test this repository's code, not some other copy of it.
 
@@ -1410,7 +1785,7 @@ class InputSnapshotTests(unittest.TestCase):
             name = os.path.basename(str(path))
             if on_process is not None:
                 on_process(name)
-            return [name, 10, 10, "PASS"] + [""] * 25
+            return [name, 10, 10, "PASS"] + [""] * 28
 
         return patch("batch_worm_roi.process_image", side_effect=fake_process_image)
 

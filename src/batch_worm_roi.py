@@ -25,7 +25,7 @@ from evaluate_tip_refiner import refine_instances
 
 # Written into every batch_summary.csv row, so a test build can be told apart
 # from a release build in a bug report without asking which download was used.
-SOFTWARE_VERSION = "0.4.3-beta-imagej"
+SOFTWARE_VERSION = "0.5.0-beta-imagej"
 
 # 每一版**发行过**的低清模型指纹，新的在前。做成集合而不是单个值：0.4.3 随包带的是
 # models/0.2.2，但 0.4.2 与 0.4.1 那两批已经散出去的权重（models/0.2.1、models/0.2.0）
@@ -230,12 +230,19 @@ def check_image(path):
         return ImageCheck("unreadable", str(exc) or exc.__class__.__name__, "", "")
 
 
-def _reject_unsupported_images(paths):
+def _reject_unsupported_images(paths, allow_stacks=False):
     """Stop the batch before it starts if any image would be mis-segmented.
 
     Refusing the whole batch up front is deliberate: a run that silently
     segmented plane 0 of a stack would hand ImageJ ROIs that do not match the
     plane it then measures, and nothing downstream would flag it.
+
+    allow_stacks lifts that refusal for multi-plane files alone, and only when
+    the caller has somewhere else to settle which plane is which -- the
+    brightfield path asks the user for the two plane numbers and passes them
+    down, so the mismatch this guard exists to prevent cannot happen. The other
+    three verdicts describe files nothing downstream can fix by choosing a
+    plane, and stay refused either way.
 
     Returns the remarks to log about images that were accepted anyway.
     """
@@ -256,6 +263,10 @@ def _reject_unsupported_images(paths):
                 notes.append("%s: WARNING %s" % (name, BINARY_WARNING))
             continue
         problems[found.code].append((os.path.basename(path), found.value))
+    if allow_stacks:
+        # The plane numbers came from the user, so a stack is a file this run
+        # knows how to read rather than one it cannot.
+        problems["stack"] = []
     lines = ["  %s %s" % (name, template % value)
              for code, template in order
              for name, value in problems[code]]
@@ -266,9 +277,52 @@ def _reject_unsupported_images(paths):
         "This program reads only the first plane and only single-channel "
         "greyscale, while ImageJ measures the channel, Z-slice and timepoint "
         "currently selected in its window; on multi-plane or colour files the "
-        "ROIs and the measurements would describe different planes. Convert the "
-        "files to single-channel, single-plane TIFFs (Image > Stacks > Stack to "
-        "Images, then keep the channel you want) and run again." % "\n".join(lines))
+        "ROIs and the measurements would describe different planes. Multi-plane "
+        "TIFFs are processed with Brightfield ROI turned on, which asks which "
+        "plane holds the brightfield image and which holds the fluorescence one; "
+        "for anything else, convert the files to single-channel, single-plane "
+        "TIFFs (Image > Stacks > Stack to Images, then keep the channel you want) "
+        "and run again." % "\n".join(lines))
+
+
+def multi_plane_images(paths):
+    """[(path, planes)] for the images carrying data beyond the first plane.
+
+    The same verdict _reject_unsupported_images refuses on, offered under its
+    own name because the brightfield path has to know how deep each stack is:
+    the plane numbers the user gives are checked against these counts before a
+    single file is decoded, and a number past the end is then reported per image
+    instead of quietly measuring whatever plane the seek happened to land on.
+    """
+    found = []
+    for path in paths:
+        result = check_image(path)
+        if result.code == "stack":
+            found.append((path, int(result.value)))
+    return found
+
+
+def select_plane(image, plane, frame_count, tiff_path):
+    """Point an open PIL handle at plane `plane` (1-based), or refuse.
+
+    Numbering matches what Pillow counts and what ImageJ counts, which is the
+    flat page order in the file -- the two sides have to agree on this or the
+    ROIs and the measurements describe different pictures.
+
+    The failure this exists for is not seek() raising. It is seek() succeeding
+    and leaving the handle on page 0, or on whatever page the last image left it
+    on: the run then segments one plane and measures another, every number looks
+    plausible, and nothing downstream can tell. So the position is read back
+    rather than trusted, and a seek past the end is refused up front instead of
+    being left to Pillow's EOFError, whose behaviour has moved between versions.
+    """
+    if plane > frame_count:
+        raise ValueError("%s: 文件只有 %d 层，没有第 %d 层" %
+                         (os.path.basename(tiff_path), frame_count, plane))
+    image.seek(plane - 1)
+    if image.tell() != plane - 1:
+        raise ValueError("%s: 无法定位到第 %d 层（停在第 %d 层）" %
+                         (os.path.basename(tiff_path), plane, image.tell() + 1))
 
 
 def find_stem_collisions(paths):
@@ -308,9 +362,12 @@ def _reject_output_name_collisions(paths):
 # _failure_row from drifting apart, which is the failure mode worth guarding
 # here: a row one field short still writes a perfectly well formed CSV, with
 # every value after the gap quietly sitting under the wrong column name.
+# brightfield_model_sha256 sits next to the worm one rather than among the
+# per-image columns: it says which weights this run used, and it is empty on a
+# run that did not use any.
 RUN_COLUMNS = ("run_id", "device", "inference_precision",
-               "worm_model_sha256", "tip_model_sha256", "software_version",
-               "error")
+               "worm_model_sha256", "brightfield_model_sha256",
+               "tip_model_sha256", "software_version", "error")
 
 
 def _failure_row(header, name, detail, run_id, device_name):
@@ -448,6 +505,19 @@ def _discard_partial_outputs(output_dir, stem):
         except OSError as exc:
             stuck.append("%s (%s)" % (os.path.basename(path), exc))
     return stuck
+
+
+# What the brightfield path needs to segment, gathered into one object so that
+# process_image gains one parameter instead of seven.
+#
+# Every field here is a property of the brightfield weights themselves. The
+# shape thresholds (min_area_fraction and friends) are deliberately absent: they
+# describe what a worm looks like, and both models were trained on the same
+# worms, so they stay the caller's business and reach the prediction unchanged.
+BrightfieldRoi = namedtuple(
+    "BrightfieldRoi",
+    "model tip_model image_size normalization_mode "
+    "tip_patch_size tip_probability_threshold tip_replace_fraction")
 
 
 def expected_count_from_filename(stem):
@@ -965,12 +1035,74 @@ def process_image(tiff_path, output_dir, model, device, image_size=IMAGE_SIZE,
                   shape_refinement=False, low_clarity_split=False,
                   manual_head_annotation=False, segment_selection=False,
                   segment_start=0.0, segment_end=1.0,
-                  measurement_backend="python"):
+                  measurement_backend="python",
+                  fluorescence_plane=1, brightfield_plane=1, brightfield_roi=None):
     if measurement_backend not in ("python", "imagej"):
         raise ValueError("measurement_backend must be 'python' or 'imagej'")
     manual_head_annotation = bool(manual_head_annotation or segment_selection)
+    brightfield_enabled = brightfield_roi is not None
     image = Image.open(tiff_path)
-    raw = image_array(image)
+    try:
+        frame_count = image.n_frames
+    except Exception:
+        # Same reading as check_image: a chain Pillow cannot walk past page 0
+        # still hands page 0 to everyone, which is all a single-plane run reads.
+        frame_count = 1
+    # A single-plane file in a mixed folder has nothing to choose between, so it
+    # is processed exactly as it was before this feature -- main model and all.
+    # The plane numbers do not apply to it, and a folder of nothing but single
+    # plane files behaves identically whether the option is on or off.
+    use_brightfield = brightfield_enabled and frame_count > 1
+    if not use_brightfield:
+        raw = image_array(image)
+        segmentation_raw = measurement_raw = raw
+        qc_plane = measured_plane = 1
+    else:
+        # Two different pictures from one file. Segmentation -- and therefore
+        # every ROI and the overlay they are drawn on -- comes from the
+        # brightfield plane; every number comes from the fluorescence plane.
+        select_plane(image, brightfield_plane, frame_count, tiff_path)
+        segmentation_raw = image_array(image)
+        select_plane(image, fluorescence_plane, frame_count, tiff_path)
+        measurement_raw = image_array(image)
+        if segmentation_raw.shape != measurement_raw.shape:
+            # Caught here rather than where it would otherwise surface. The
+            # masks below are built on the brightfield raster and then indexed
+            # into this one; on rasters that broadcast the numbers would come
+            # out wrong and look entirely ordinary, and on the rest it would be
+            # an IndexError naming nothing to do with the real cause.
+            raise ValueError(
+                "%s: 明场层与荧光层的尺寸不同（%s vs %s），无法把 ROI 应用到荧光图上" %
+                (os.path.basename(tiff_path),
+                 "x".join(str(n) for n in segmentation_raw.shape),
+                 "x".join(str(n) for n in measurement_raw.shape)))
+        qc_plane, measured_plane = brightfield_plane, fluorescence_plane
+    if use_brightfield:
+        # The whole segmentation side runs on the brightfield weights: model,
+        # tip refiner, and the settings that belong to those weights. There is
+        # no branch here that falls back to the fluorescence model -- a missing
+        # brightfield checkpoint is refused before the batch starts.
+        segmentation_model = brightfield_roi.model
+        segmentation_tip_model = brightfield_roi.tip_model
+        segmentation_image_size = brightfield_roi.image_size
+        segmentation_normalization_mode = brightfield_roi.normalization_mode
+        segmentation_tip_patch_size = brightfield_roi.tip_patch_size
+        segmentation_tip_probability_threshold = brightfield_roi.tip_probability_threshold
+        segmentation_tip_replace_fraction = brightfield_roi.tip_replace_fraction
+        # 低清分裂器固定关。这个开关的判据是「主 checkpoint 的 sha 在这一版认得的低清
+        # 指纹里」，与明场权重毫无关系；而那个分裂器本身只在低清荧光域上训过，拿它去处
+        # 理明场等于引入一段没验证过的后处理。保守方向是关掉。数据到了之后按明场的留出
+        # 结果再决定要不要开——那时改这一行即可。
+        segmentation_low_clarity_split = False
+    else:
+        segmentation_model = model
+        segmentation_tip_model = tip_model
+        segmentation_image_size = image_size
+        segmentation_normalization_mode = normalization_mode
+        segmentation_tip_patch_size = tip_patch_size
+        segmentation_tip_probability_threshold = tip_probability_threshold
+        segmentation_tip_replace_fraction = tip_replace_fraction
+        segmentation_low_clarity_split = low_clarity_split
     stem = os.path.splitext(os.path.basename(tiff_path))[0]
     # Everything this function writes lands in one of these two. Created here as
     # well as in run_gui_batch because process_image is also called directly,
@@ -986,25 +1118,27 @@ def process_image(tiff_path, output_dir, model, device, image_size=IMAGE_SIZE,
         from manual_head_annotation import (
             exclusion_mask, load_image_annotations, load_image_boundary_guides,
             load_image_exclusion_regions)
-        current_size = (raw.shape[1], raw.shape[0])
+        current_size = (segmentation_raw.shape[1], segmentation_raw.shape[0])
         arrows = load_image_annotations(tiff_path, current_size=current_size)
         boundary_guides = load_image_boundary_guides(tiff_path, current_size=current_size)
         exclusion_regions = load_image_exclusion_regions(tiff_path, current_size=current_size)
         if exclusion_regions:
-            manual_exclusion_mask = exclusion_mask(raw.shape[:2], exclusion_regions)
+            manual_exclusion_mask = exclusion_mask(
+                segmentation_raw.shape[:2], exclusion_regions)
     split_reports = []
     prediction = predict_raw(
-        model, raw, device, image_size=image_size,
+        segmentation_model, segmentation_raw, device,
+        image_size=segmentation_image_size,
         interior_threshold=interior_threshold,
         erosion_iterations=erosion_iterations,
         min_area_fraction=min_area_fraction,
         min_height_fraction=min_height_fraction, max_instances=image_max_instances,
-        tip_model=tip_model, tip_patch_size=tip_patch_size,
-        tip_probability_threshold=tip_probability_threshold,
-        tip_replace_fraction=tip_replace_fraction,
-        normalization_mode=normalization_mode,
+        tip_model=segmentation_tip_model, tip_patch_size=segmentation_tip_patch_size,
+        tip_probability_threshold=segmentation_tip_probability_threshold,
+        tip_replace_fraction=segmentation_tip_replace_fraction,
+        normalization_mode=segmentation_normalization_mode,
         return_foreground_probability=shape_refinement,
-        low_clarity_split=low_clarity_split, split_reports=split_reports,
+        low_clarity_split=segmentation_low_clarity_split, split_reports=split_reports,
         split_count_limit=marked_count if marked_count is not None else standard_count,
         exclusion_mask=manual_exclusion_mask)
     if shape_refinement:
@@ -1081,7 +1215,9 @@ def process_image(tiff_path, output_dir, model, device, image_size=IMAGE_SIZE,
             "%s: 找不到干净背景区域（候选位置都被虫体或人工排除区占满，或剩下不足 %d 像素）"
             "；请检查人工排除区，或改用虫体周围留有余地的图像"
             % (os.path.basename(tiff_path), BACKGROUND_MIN_AREA_PIXELS))
-    background = (statistics(raw, background_mask)
+    # 背景与每头虫的数值都取自测量底图：明场ROI 开启时那是荧光层，关闭时
+    # 就是分割用的那一层。ROI 本身来自分割底图，两者只在多层文件里不同。
+    background = (statistics(measurement_raw, background_mask)
                   if measurement_backend == "python" else None)
     rois, rows, areas = [], [], []
     for label in range(1, count + 1):
@@ -1092,7 +1228,7 @@ def process_image(tiff_path, output_dir, model, device, image_size=IMAGE_SIZE,
         name = "%02d_worm" % label
         rois.append(compound_roi(polygon, holes, name))
         if measurement_backend == "python":
-            values = statistics(raw, mask)
+            values = statistics(measurement_raw, mask)
             areas.append(values["area"])
             corrected_mean = values["mean"] - background["mean"]
             corrected_total = values["raw_sum"] - values["area"] * background["mean"]
@@ -1218,7 +1354,9 @@ def process_image(tiff_path, output_dir, model, device, image_size=IMAGE_SIZE,
     return [os.path.basename(tiff_path), count, expected_count, qc,
             background["mean"] if background is not None else "", roi_path, csv_path,
             shape_refined_count, shape_review_count, shape_report_path,
-            len(split_reports), split_report_path, bool(low_clarity_split),
+            # 这一列记的是**实际跑没跑**分裂器，不是调用者传进来的那个值：明场这一路
+            # 无论传什么都固定关（见上面 segmentation_low_clarity_split）。
+            len(split_reports), split_report_path, bool(segmentation_low_clarity_split),
             bool(manual_head_annotation), matched_head_count,
             bool(head_annotation_complete), head_report_path,
             len(manual_split_reports), manual_split_report_path,
@@ -1226,7 +1364,10 @@ def process_image(tiff_path, output_dir, model, device, image_size=IMAGE_SIZE,
             int(manual_exclusion_mask.sum()) if manual_exclusion_mask is not None else 0,
             bool(segment_selection), float(segment_start), float(segment_end),
             len(segment_reports), mean_segment_fraction, segment_report_path,
-            measurement_backend]
+            measurement_backend,
+            # 明场ROI：开关是整批的属性，层号是这张图的属性。混批里的单层图记
+            # (1, 1, 1) —— 它没有层可选，而监视器正是靠这两列决定要不要标层号。
+            int(brightfield_enabled), qc_plane, measured_plane]
 
 
 def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path,
@@ -1238,7 +1379,10 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
                   low_clarity_split=None, manual_head_annotation=False,
                   segment_selection=False, segment_start=0.0, segment_end=1.0,
                   input_paths=None, measurement_backend="python",
-                  on_image_failed=None):
+                  on_image_failed=None, brightfield_roi=False,
+                  fluorescence_plane=1, brightfield_plane=2,
+                  brightfield_checkpoint_path=None,
+                  brightfield_tip_checkpoint_path=None):
     """进程内批量处理,供 GUI 直接调用(不依赖外部 python 或子进程)。
 
     加载整虫与头尾模型,遍历 input_folder 下的 TIFF,逐张调用 process_image,
@@ -1251,6 +1395,9 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
 
     与命令行的 main() 共享同一套推理与后处理细节;所有可选参数为 None 时，
     采用与 checkpoint 中记录一致的默认值。
+
+    brightfield_roi 打开时,多层 TIFF 用 brightfield_plane 那一层圈 ROI、用
+    fluorescence_plane 那一层出数值;单层 TIFF 不受影响,照旧用主模型处理。
     """
     def report(text, *args):
         if on_status is not None:
@@ -1279,7 +1426,32 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
             raise FileNotFoundError("Invalid TIFF input: " + invalid[0])
     if not paths:
         raise FileNotFoundError("No TIFF images found in: " + input_folder)
-    format_notes = _reject_unsupported_images(paths)
+    fluorescence_plane = int(fluorescence_plane)
+    brightfield_plane = int(brightfield_plane)
+    if fluorescence_plane < 1 or brightfield_plane < 1:
+        raise ValueError("plane numbers are 1-based: %d and %d were given" %
+                         (fluorescence_plane, brightfield_plane))
+    if brightfield_roi and fluorescence_plane == brightfield_plane:
+        # One plane cannot be both. Refused here rather than at the first image:
+        # the batch would otherwise run to the end producing ROIs and numbers
+        # from the same picture, which is a result nobody asked for and nothing
+        # in the summary would mark as odd.
+        raise ValueError(
+            "Fluorescence plane and brightfield plane are both %d; they must "
+            "differ" % fluorescence_plane)
+    # With the plane numbers settled above, a stack is a file this run knows how
+    # to read. Without them it stays the flat refusal it has always been.
+    format_notes = _reject_unsupported_images(paths, allow_stacks=bool(brightfield_roi))
+    if brightfield_roi:
+        wanted = max(fluorescence_plane, brightfield_plane)
+        too_shallow = [(os.path.basename(path), planes)
+                       for path, planes in multi_plane_images(paths) if planes < wanted]
+        if too_shallow:
+            raise ValueError(
+                "这些多层 TIFF 没有第 %d 层（要处理荧光层 %d、明场层 %d）：\n%s\n"
+                "请重新核对层号后重试。" % (
+                    wanted, fluorescence_plane, brightfield_plane,
+                    "\n".join("  %s 只有 %d 层" % pair for pair in too_shallow)))
     _reject_output_name_collisions(paths)
     # Both subfolders are created up front, not on first use: the ImageJ side is
     # handed the output folder and looks for the ROI sets and the QC overlays in
@@ -1331,6 +1503,44 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
             float(tip_checkpoint.get("replace_fraction", 0.14)))
     image_size = int(checkpoint.get("image_size", IMAGE_SIZE))
     normalization_mode = str(checkpoint.get("normalization_mode", "legacy"))
+    # The brightfield weights, loaded only when the feature is on and refused
+    # outright when they are not there. There is deliberately no fallback to the
+    # fluorescence model: a brightfield acquisition segmented by weights trained
+    # on fluorescence would produce ROIs that look reasonable and are not, which
+    # is the one outcome nothing downstream can detect.
+    brightfield = None
+    brightfield_model_sha256 = ""
+    if brightfield_roi:
+        for label, path in (("Brightfield checkpoint not found: ",
+                             brightfield_checkpoint_path),
+                            ("Brightfield tip checkpoint not found: ",
+                             brightfield_tip_checkpoint_path)):
+            if not path or not os.path.isfile(path):
+                raise FileNotFoundError(label + str(path))
+        brightfield_model_sha256 = _sha256_file(brightfield_checkpoint_path)
+        brightfield_checkpoint = torch.load(brightfield_checkpoint_path, map_location=device)
+        brightfield_model = WormUNet(
+            base=int(brightfield_checkpoint.get("base", 16))).to(device)
+        brightfield_model.load_state_dict(brightfield_checkpoint["model_state"])
+        brightfield_model.eval()
+        brightfield_tip = torch.load(brightfield_tip_checkpoint_path, map_location=device)
+        brightfield_tip_model = WormUNet(
+            base=int(brightfield_tip.get("base", 12)),
+            in_channels=int(brightfield_tip.get("in_channels", 2)),
+            out_channels=int(brightfield_tip.get("out_channels", 2))).to(device)
+        brightfield_tip_model.load_state_dict(brightfield_tip["model_state"])
+        brightfield_tip_model.eval()
+        brightfield = BrightfieldRoi(
+            model=brightfield_model,
+            tip_model=brightfield_tip_model,
+            image_size=int(brightfield_checkpoint.get("image_size", IMAGE_SIZE)),
+            normalization_mode=str(
+                brightfield_checkpoint.get("normalization_mode", "legacy")),
+            tip_patch_size=int(brightfield_tip.get("patch_size", 192)),
+            tip_probability_threshold=float(
+                brightfield_tip.get("probability_threshold", 0.40)),
+            tip_replace_fraction=float(
+                brightfield_tip.get("replace_fraction", 0.14)))
     checkpoint_has_threshold = "postprocess_interior_threshold" in checkpoint
     interior_threshold = (interior_threshold if interior_threshold is not None else
                           checkpoint.get("postprocess_interior_threshold"))
@@ -1369,6 +1579,10 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
         "segment_selection_enabled", "segment_start_fraction", "segment_end_fraction",
         "segment_selection_count", "segment_mean_area_fraction", "segment_qc_csv",
         "measurement_backend",
+        # 明场ROI。开关记整批,层号记这张图,所以三列永远有值:功能关闭时是
+        # (0, 1, 1),混批里的单层图是 (1, 1, 1)。监视器据此决定要不要在 QC
+        # 的说明里标层号,不必自己猜「功能关了就默认第 1 层」。
+        "brightfield_roi_enabled", "qc_plane", "measured_plane",
     ]
     # The run columns come last so a reader keyed by column name (the GUI, the
     # export check) is unaffected by a new one. "error" is the very last of them,
@@ -1382,8 +1596,26 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
     for note in format_notes:
         report("%s", note)
     report("Device: %s (%s)", device_name, precision)
+    if brightfield is not None:
+        report("Brightfield ROI: fluorescence plane %d, brightfield plane %d",
+               fluorescence_plane, brightfield_plane)
+        if (brightfield.image_size != image_size or
+                brightfield.normalization_mode != normalization_mode):
+            # 这一行几乎每批都会出现，因为明场的归一化按设计就是 legacy、荧光低清是
+            # background_aware。写成「differ」不加解释，读日志的人会以为出了问题。
+            report("Brightfield model settings (each checkpoint carries its own): "
+                   "image_size %d vs main %d, normalization %s vs main %s",
+                   brightfield.image_size, image_size,
+                   brightfield.normalization_mode, normalization_mode)
     if low_clarity_split:
-        report("Low-clarity head-gap separation: enabled")
+        if brightfield is not None:
+            # 明场这一路固定关掉分裂器（见 process_image 里的
+            # segmentation_low_clarity_split）；只有混批里的单层图还走主模型、还用得上。
+            # 不分开说的话，日志会宣称一个这一批的多层图根本没跑的后处理开着。
+            report("Low-clarity head-gap separation: enabled for single-plane files "
+                   "only (never on the brightfield plane)")
+        else:
+            report("Low-clarity head-gap separation: enabled")
     if manual_head_annotation:
         report("Manual arrows, boundaries and exclusion regions: enabled "
                "(reading per-image .autoworm.json or %s)",
@@ -1425,7 +1657,10 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
                 manual_head_annotation=manual_head_annotation,
                 segment_selection=segment_selection,
                 segment_start=segment_start, segment_end=segment_end,
-                measurement_backend=measurement_backend)
+                measurement_backend=measurement_backend,
+                fluorescence_plane=fluorescence_plane,
+                brightfield_plane=brightfield_plane,
+                brightfield_roi=brightfield)
         except Exception as exc:
             # One pathological image must not throw away the work already done on
             # the rest of the folder. The image is named "Failed_<name>" in the
@@ -1448,7 +1683,8 @@ def run_gui_batch(input_folder, output_dir, checkpoint_path, tip_checkpoint_path
         else:
             # The empty last entry is the error column, which a success leaves blank.
             run_values = (run_id, device_name, precision, worm_model_sha256,
-                          tip_model_sha256, SOFTWARE_VERSION, "")
+                          brightfield_model_sha256, tip_model_sha256,
+                          SOFTWARE_VERSION, "")
             rows.append(_success_row(summary_header, result, run_values))
             # results is what callers expect from before the summary existed:
             # process_image's own values followed by the run metadata.
@@ -1509,6 +1745,22 @@ def main():
                         help="selected start on the head-to-tail centerline, from 0 to 1")
     parser.add_argument("--segment-end", type=float, default=1.0,
                         help="selected end on the head-to-tail centerline, from 0 to 1")
+    parser.add_argument(
+        "--brightfield-roi", action="store_true",
+        help="process multi-plane TIFFs: draw the ROIs on the brightfield plane "
+             "and take the measurements from the fluorescence plane")
+    parser.add_argument(
+        "--fluorescence-plane", type=int, default=1,
+        help="1-based plane holding the fluorescence image to measure (default 1)")
+    parser.add_argument(
+        "--brightfield-plane", type=int, default=2,
+        help="1-based plane holding the brightfield image to segment (default 2)")
+    parser.add_argument(
+        "--brightfield-checkpoint", default=None,
+        help="brightfield segmentation weights; required with --brightfield-roi")
+    parser.add_argument(
+        "--brightfield-tip-checkpoint", default=None,
+        help="brightfield tip refiner weights; required with --brightfield-roi")
     args = parser.parse_args()
     output_dir = os.path.abspath(args.output or os.path.join(os.path.abspath(args.input_folder), "_auto_roi"))
     run_gui_batch(
@@ -1532,6 +1784,11 @@ def main():
         min_area=args.min_area,
         min_height=args.min_height,
         max_instances=args.max_instances,
+        brightfield_roi=args.brightfield_roi,
+        fluorescence_plane=args.fluorescence_plane,
+        brightfield_plane=args.brightfield_plane,
+        brightfield_checkpoint_path=args.brightfield_checkpoint,
+        brightfield_tip_checkpoint_path=args.brightfield_tip_checkpoint,
         on_status=print)
 
 

@@ -29,7 +29,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageOps, ImageTk
 
 
-APP_VERSION = "0.4.3-beta"
+APP_VERSION = "0.5.0-beta"
 APP_DIR = Path(__file__).resolve().parent
 # 打包后 __file__ 指向 PyInstaller 解包目录,不是 exe 所在目录。
 # exe 可执行目录才是模型与配置的正确根目录。
@@ -58,6 +58,13 @@ CONFIG_PATH = STATE_DIR / "settings.json"
 MODEL_ROOT = APP_ROOT / "models"
 IMAGEJ_BRIDGE_DIR = os.environ.get("AUTOWORM_IMAGEJ_BRIDGE_DIR", "").strip()
 IMAGEJ_MEASUREMENT_MODE = os.environ.get("AUTOWORM_IMAGEJ_MODE", "") == "1"
+# Which bridge the plug-in that started us speaks. The 0.5.0 jar sets "2"; every
+# older jar sets nothing, so an empty string here means the jar in Fiji predates
+# the plane field. That combination is only dangerous with 明场ROI on -- an old
+# jar would measure slice 1 of every stack and say nothing -- so the check lives
+# in _start_processing and only fires for that one case.
+IMAGEJ_BRIDGE_PROTOCOL = os.environ.get("AUTOWORM_IMAGEJ_BRIDGE_PROTOCOL", "").strip()
+IMAGEJ_BRIDGE_PROTOCOL_REQUIRED = "2"
 CUDA_MIN_DRIVER_MAJOR = 580
 
 # One name per notification inside the bridge directory. Zero padded because the
@@ -83,7 +90,7 @@ def _imagej_bridge_pending() -> bool:
 
 def _write_imagej_bridge_file(
         status: str, input_dir: str = "", output_dir: str = "", message: str = "",
-        successful_images=None) -> str | None:
+        successful_images=None, qc_plane: int = 1, measured_plane: int = 1) -> str | None:
     """Atomically write one ASCII notification for the Java plug-in to read.
 
     Every call gets its own file name. A single fixed path would be overwritten
@@ -94,6 +101,20 @@ def _write_imagej_bridge_file(
     folder names them, and the plug-in measures those and only those. None means
     "no list" and leaves the receiver on its older rule (measure every image
     that has a ROI ZIP), which is all the diagnostic --headless-run path needs.
+
+    ``measured_plane`` is the 1-based page the plug-in is to measure, and every
+    image of a brightfield batch shares it because the two plane numbers are
+    asked once per batch. It is written as a bare decimal rather than base64,
+    like ok_count: Properties.load handles plain digits without any of the
+    escaping rules that make a hand-built .properties file fragile. A jar from
+    before this field existed ignores it and measures slice 1, which is why the
+    protocol check happens before the batch rather than here.
+
+    ``qc_plane`` is the page the QC image was cut from, and the 0.5.0 plug-in
+    does not read it -- the QC PNG is already the brightfield picture, so it has
+    nothing to look up. It is written anyway to keep the notification and
+    batch_summary.csv describing the run the same way; a future reader that wants
+    to say where a QC came from does not have to guess.
 
     Returns None on success, or an error string describing the failure.
     """
@@ -108,6 +129,8 @@ def _write_imagej_bridge_file(
         "input_b64=" + encoded(input_dir),
         "output_b64=" + encoded(output_dir),
         "message_b64=" + encoded(message),
+        "qc_plane=" + str(int(qc_plane)),
+        "measured_plane=" + str(int(measured_plane)),
     ]
     if successful_images is not None:
         names = sorted({str(name).strip() for name in successful_images
@@ -125,6 +148,32 @@ def _write_imagej_bridge_file(
     except OSError as exc:
         return f"{type(exc).__name__}: {exc}"
 
+
+def _bridge_planes(job) -> tuple[int, int]:
+    """The (qc_plane, measured_plane) this job's images were written with.
+
+    Both are 1 unless the batch ran with Brightfield ROI on, in which case the
+    plug-in is told to measure the fluorescence plane -- the analysis images came
+    off the brightfield plane, so measuring slice 1 would report numbers from
+    whichever plane happens to be first.
+
+    The two plane numbers are a property of the batch because the dialog asks
+    once for the whole run, so one pair is right for every image it finished,
+    mixed folders of single-plane files included: those were processed as
+    single-plane files and their ROI was made from plane 1, so reporting any
+    other number would be a lie about what the ROI covers.
+    """
+    if not job or not job.get("brightfield_roi"):
+        return 1, 1
+    try:
+        fluorescence = int(job["fluorescence_plane"])
+        brightfield = int(job["brightfield_plane"])
+    except (KeyError, TypeError, ValueError):
+        return 1, 1
+    if fluorescence < 1 or brightfield < 1:
+        return 1, 1
+    return brightfield, fluorescence
+
 MODEL_CONFIGS = {
     "high": {
         "label": "高清晰度图像",
@@ -138,6 +187,22 @@ MODEL_CONFIGS = {
         "checkpoint": MODEL_ROOT / "0.2.2" / "worm.pt",
         "tip_checkpoint": MODEL_ROOT / "0.2.2" / "tip.pt",
     },
+}
+
+# 明场模型单独一个目录，不占荧光模型的版本号：0.1.x/0.2.x 已经用掉，明场再挤进
+# 同一套编号，早晚会和下一版荧光模型撞上。
+#
+# 它不是 MODEL_CONFIGS 的第三个模式。明场是一个勾选项，不是一种「处理模式」，
+# 加进去会连累 _mode_label 的三元表达式、两个 Radiobutton，以及按模式查
+# low_clarity_split 的那段推理。
+#
+# 本轮这两个文件还不存在（权重等用户给数据后再训），所以开启明场ROI 会在预检里
+# 明确报「缺少模型」并拒绝启动——这正是要的：绝不能静默回退到高清或低清模型。
+BRIGHTFIELD_MODEL_CONFIG = {
+    "label": "明场图像",
+    "version": "brightfield-0.1.0",
+    "checkpoint": MODEL_ROOT / "brightfield-0.1.0" / "worm.pt",
+    "tip_checkpoint": MODEL_ROOT / "brightfield-0.1.0" / "tip.pt",
 }
 
 THEMES = {
@@ -338,6 +403,15 @@ class WormRoiGui:
         self.segment_end_var = tk.DoubleVar(value=segment_end)
         if self.segment_selection_var.get():
             self.manual_head_annotation_var.set(True)
+        # 明场ROI。开关与两个层号都从配置读回来，但层号只作为对话框的默认值：
+        # 每一批都重新问一遍，因为「这个文件夹的荧光在第几层」是数据的事，不是
+        # 偏好设置的事，记在配置里只会在换一批图时静默用错。
+        self.brightfield_roi_var = tk.BooleanVar(value=bool(
+            self.config_data.get("brightfield_roi", False)))
+        self.fluorescence_plane_var = tk.IntVar(value=max(
+            1, self._configured_int("fluorescence_plane", 1)))
+        self.brightfield_plane_var = tk.IntVar(value=max(
+            1, self._configured_int("brightfield_plane", 2)))
         self.theme_var = tk.StringVar(value=self.config_data.get("theme", "dark"))
         if self.theme_var.get() not in THEMES:
             self.theme_var.set("dark")
@@ -366,6 +440,15 @@ class WormRoiGui:
         self.qc_files: list[Path] = []
         self.qc_status: dict[str, str] = {}
         self.qc_attention: dict[str, bool] = {}
+        # 每张 QC 图的两个层号 (qc_plane, measured_plane)，按图名索引。
+        #
+        # 存的是这两个数的**差**而不是「明场开关」：混批里单层图的 QC 明明来自
+        # 荧光层，可它那一行的开关列与整批相同，只看开关会给它标上一个并不存在
+        # 的「明场层」。而 qc_plane != measured_plane 恰好只在「这张图的 QC 真的
+        # 取自另一层」时成立——批量预检不允许两层相同，单层图则两层都是 1。
+        #
+        # 键缺失表示这张 QC 来自旧版汇总表，层号无从得知。
+        self.qc_planes: dict[str, tuple[int, int]] = {}
         self.qc_page = 0
         self.selected_qc: Path | None = None
         self.tree_paths: dict[str, Path] = {}
@@ -413,6 +496,18 @@ class WormRoiGui:
                 continue
         return {}
 
+    def _configured_int(self, key: str, default: int) -> int:
+        """One integer out of the saved settings, or the default.
+
+        Anything unusable -- absent, a string a hand edit broke, a float -- reads
+        as the default rather than raising. These are dialog defaults, so the
+        cost of being wrong is a number the user is about to be asked anyway.
+        """
+        try:
+            return int(self.config_data.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     def _save_config(self) -> None:
         data = {
             "language": self.language_var.get(),
@@ -420,6 +515,9 @@ class WormRoiGui:
             "worm_count": self.last_valid_worm_count,
             "shape_refinement": self.shape_refinement_var.get(),
             "manual_head_annotation": self.manual_head_annotation_var.get(),
+            "brightfield_roi": self.brightfield_roi_var.get(),
+            "fluorescence_plane": int(self.fluorescence_plane_var.get()),
+            "brightfield_plane": int(self.brightfield_plane_var.get()),
             "segment_selection": self.segment_selection_var.get(),
             "segment_start": round(float(self.segment_start_var.get()), 2),
             "segment_end": round(float(self.segment_end_var.get()), 2),
@@ -627,8 +725,17 @@ class WormRoiGui:
                 "Partial ROI (manual head direction required)"),
             variable=self.segment_selection_var,
             command=self._segment_selection_changed, pady=(3, 0))
+        # 明场ROI 放在最后：它是唯一一个「会改变本次处理的图从哪一层来」的选项，
+        # 与上面几个后处理开关不同类，隔开一行更清楚。必须走 _compact_check_option，
+        # 否则 settings_option_rows/labels 里没有它，深浅色主题不会给它上色。
+        self.brightfield_roi_check, self.brightfield_roi_label = self._compact_check_option(
+            body, row=7, text=self._tr(
+                "明场ROI（多层 TIFF 需开启）",
+                "Brightfield ROI (required for multi-plane TIFFs)"),
+            variable=self.brightfield_roi_var,
+            command=self._brightfield_roi_changed, pady=(6, 0))
         self.segment_range_frame = tk.Frame(body)
-        self.segment_range_frame.grid(row=7, column=0, sticky="ew", padx=13, pady=(0, 2))
+        self.segment_range_frame.grid(row=8, column=0, sticky="ew", padx=13, pady=(0, 2))
         self.segment_range_frame.columnconfigure(0, weight=1)
         self.segment_range_canvas = tk.Canvas(
             self.segment_range_frame, height=48, bd=0, highlightthickness=0,
@@ -640,7 +747,7 @@ class WormRoiGui:
         self.segment_range_canvas.bind("<ButtonRelease-1>", self._segment_range_release)
         self.output_hint = tk.Label(body, anchor="w", justify="left", wraplength=250,
                                     font=("Microsoft YaHei UI", 8))
-        self.output_hint.grid(row=8, column=0, sticky="ew", padx=15, pady=(3, 8))
+        self.output_hint.grid(row=9, column=0, sticky="ew", padx=15, pady=(3, 8))
         self._update_output_hint()
 
     def _compact_check_option(self, parent: tk.Widget, row: int, text: str,
@@ -874,6 +981,11 @@ class WormRoiGui:
                                  "Partial ROI (manual head direction required)"),
                              variable=self.segment_selection_var,
                              command=self._segment_selection_changed)
+        menu.add_checkbutton(label=self._tr(
+                                 "明场ROI（多层 TIFF 需开启）",
+                                 "Brightfield ROI (required for multi-plane TIFFs)"),
+                             variable=self.brightfield_roi_var,
+                             command=self._brightfield_roi_changed)
         menu.add_separator()
         theme_menu = tk.Menu(menu, tearoff=False)
         theme_menu.add_radiobutton(label=self._tr("深色", "Dark"), variable=self.theme_var,
@@ -1005,6 +1117,9 @@ class WormRoiGui:
         self.segment_selection_label.configure(text=self._tr(
             "部分圈画（需手动标注头向）",
             "Partial ROI (manual head direction required)"))
+        self.brightfield_roi_label.configure(text=self._tr(
+            "明场ROI（多层 TIFF 需开启）",
+            "Brightfield ROI (required for multi-plane TIFFs)"))
         self.prev_button.configure(text=self._tr("上一页", "Previous"))
         self.next_button.configure(text=self._tr("下一页", "Next"))
         self.annotation_arrow_mode.configure(text=self._tr("头向箭头", "Head arrow"))
@@ -1270,6 +1385,58 @@ class WormRoiGui:
             self.worm_count_var.set(str(count))
             self._worm_count_changed()
 
+    def _prompt_planes(self) -> tuple[int, int] | None:
+        """问一次荧光层与明场层，返回 (荧光层, 明场层)；取消返回 None。
+
+        每批问一次而不是记住上一次的答案：同一台机器上不同批次的采集设置不同，
+        「上次是 1/2」既可能是快捷方式也可能是陷阱，而选错层的后果是一整批看起来
+        完全正常的错误数字。
+
+        两个 askinteger 是仅有的两个对话框，取消任何一个都返回 None。在此之前
+        没有做过任何有副作用的事，所以取消就是什么都没发生。
+        """
+        fluorescence = simpledialog.askinteger(
+            self._tr("荧光层（用于测量）", "Fluorescence plane (measured)"),
+            self._tr(
+                "第几层是荧光图？这一层用来测量数值（CTCF 等）。\n\n"
+                "本批所有多层 TIFF 共用这个层号。",
+                "Which plane holds the fluorescence image? This is the plane the "
+                "numbers are measured from.\n\nEvery multi-plane TIFF in this batch "
+                "uses the same plane number."),
+            parent=self.root, initialvalue=int(self.fluorescence_plane_var.get()),
+            minvalue=1)
+        if fluorescence is None:
+            return None
+        brightfield = simpledialog.askinteger(
+            self._tr("明场层（用于圈 ROI）", "Brightfield plane (segmented)"),
+            self._tr(
+                f"第几层是明场图？ROI 在这一层上圈出，然后套用到第 {fluorescence} 层"
+                "的荧光图上测量。\n\n"
+                "本批所有多层 TIFF 共用这个层号。",
+                f"Which plane holds the brightfield image? The ROIs are drawn on this "
+                f"plane and then applied to the fluorescence image on plane "
+                f"{fluorescence} for measurement.\n\nEvery multi-plane TIFF in this "
+                "batch uses the same plane number."),
+            parent=self.root, initialvalue=int(self.brightfield_plane_var.get()),
+            minvalue=1)
+        if brightfield is None:
+            return None
+        if brightfield == fluorescence:
+            messagebox.showerror(
+                self._tr("层号冲突", "Plane Numbers Clash"),
+                self._tr(
+                    f"荧光层和明场层都填了第 {fluorescence} 层，两者必须不同："
+                    "明场层用来圈出 ROI，荧光层用来测量数值，同一层无法同时担当。\n\n"
+                    "请重新开始处理并填写两个不同的层号。",
+                    f"The fluorescence plane and the brightfield plane are both "
+                    f"{fluorescence}; they must differ. The brightfield plane is where "
+                    "the ROIs come from and the fluorescence plane is where the numbers "
+                    "come from, and one plane cannot be both.\n\nStart processing again "
+                    "and give two different numbers."),
+                parent=self.root)
+            return None
+        return fluorescence, brightfield
+
     def _setting_changed(self) -> None:
         self._save_config()
 
@@ -1313,6 +1480,21 @@ class WormRoiGui:
             "Partial ROI: %s; head=0, tail=1, range %.2f–%.2f\n" %
             (state, start, end)), "info")
         self._draw_segment_range()
+        self._rebuild_settings_menu()
+        self._save_config()
+
+    def _brightfield_roi_changed(self) -> None:
+        enabled = self.brightfield_roi_var.get()
+        state = self._tr("已开启", "enabled") if enabled else self._tr("已关闭", "disabled")
+        self._terminal_write(self._tr(
+            f"明场ROI：{state}\n", f"Brightfield ROI: {state}\n"), "info")
+        if enabled:
+            self._terminal_write(self._tr(
+                "处理多层 TIFF 时会在开始处理前询问荧光层与明场层（每批问一次）；"
+                "单层 TIF 不受影响，照常处理。\n",
+                "Multi-plane TIFFs will ask for the fluorescence and brightfield "
+                "plane numbers before the batch starts (once per batch); "
+                "single-plane TIFFs are unaffected.\n"), "info")
         self._rebuild_settings_menu()
         self._save_config()
 
@@ -1443,6 +1625,7 @@ class WormRoiGui:
         self.shape_refinement_check.set_state(normal)
         self.manual_head_annotation_check.set_state(normal)
         self.segment_selection_check.set_state(normal)
+        self.brightfield_roi_check.set_state(normal)
         self.segment_range_canvas.configure(state=normal)
         for button in (self.annotation_undo_button, self.annotation_clear_button,
                        self.annotation_save_button, self.annotation_back_button):
@@ -1473,6 +1656,30 @@ class WormRoiGui:
             if not path.is_file():
                 problems.append(self._tr(
                     f"{label}不存在：{path}", f"Missing {label}: {path}"))
+        if self.brightfield_roi_var.get():
+            # 第一道防线。权重缺失时必须说清楚缺哪个文件、该在哪儿，而不是让批处理
+            # 跑起来再报一个 FileNotFoundError，更不能悄悄改用主模型。
+            # 0.5.0 起明场权重随包发布，所以这里只剩「装坏了 / 被挪走了」一种成因，
+            # 提示也照这个说——原来那句「本版本尚未随包发布明场模型」现在与事实相反。
+            missing = []
+            for key, label in [
+                    ("checkpoint", self._tr("明场分割模型", "brightfield segmentation model")),
+                    ("tip_checkpoint", self._tr(
+                        "明场头尾精修模型", "brightfield head/tail refinement model"))]:
+                path = BRIGHTFIELD_MODEL_CONFIG[key]
+                if not path.is_file():
+                    missing.append(self._tr(
+                        f"{label}不存在：{path}", f"Missing {label}: {path}"))
+            if missing:
+                problems.extend(missing)
+                problems.append(self._tr(
+                    "明场模型文件缺失，明场ROI 功能无法启动。可以试试重新解压一份完整的"
+                    "发布包（上面列出的路径必须在包里存在）；或关闭左栏的「明场ROI」，"
+                    "只处理单层 TIFF。",
+                    "The brightfield model files are missing, so Brightfield ROI cannot "
+                    "start. Re-extract a complete release package (the paths listed above "
+                    "must exist inside it), or turn the option off and process "
+                    "single-plane TIFFs only."))
         _, cuda_problems = self._cuda_runtime_info()
         problems.extend(cuda_problems)
         return problems
@@ -1482,6 +1689,34 @@ class WormRoiGui:
             messagebox.showinfo(
                 self._tr("正在处理", "Processing"),
                 self._tr("已有一个处理任务在运行。", "A processing job is already running."),
+                parent=self.root)
+            return
+        if (self.brightfield_roi_var.get() and IMAGEJ_MEASUREMENT_MODE
+                and IMAGEJ_BRIDGE_PROTOCOL != IMAGEJ_BRIDGE_PROTOCOL_REQUIRED):
+            # 最危险的一种搭配：新界面 + 旧 jar。旧 jar 不认识通知里的层号，
+            # 只会测第 1 个切片——荧光层是第 2 层时每一张都静默测错，而且
+            # 没有任何地方会报出来。这里直接拒绝启动。
+            #
+            # 明场ROI 关闭时不挡：那种情况下新旧混搭测的都是第 1 层，与旧版本
+            # 行为一致，拦下来只会白耽误事。
+            messagebox.showerror(
+                self._tr("需要同版本的 ImageJ 插件", "ImageJ Plug-in Version Mismatch"),
+                self._tr(
+                    "明场ROI 需要与界面同版本的 ImageJ 插件（当前界面 "
+                    f"{APP_VERSION}，插件协议 {IMAGEJ_BRIDGE_PROTOCOL or '未知'}）。\n\n"
+                    "旧版插件不认识层号，会一律测量第 1 层，而荧光层不是第 1 层时"
+                    "每一次测量都指向错误的平面，且不会有任何提示。\n\n"
+                    "请把插件更新到与本界面相同的版本（把 Auto_Worm_ROI.jar 复制到 "
+                    "Fiji 的 plugins 目录后重启 Fiji），或关闭「明场ROI」后再开始处理。",
+                    "Brightfield ROI needs the ImageJ plug-in from the same release as "
+                    f"this window (window {APP_VERSION}, plug-in protocol "
+                    f"{IMAGEJ_BRIDGE_PROTOCOL or 'unknown'}).\n\n"
+                    "An older plug-in does not know about plane numbers and would "
+                    "measure slice 1 of every image, silently pointing at the wrong "
+                    "plane whenever the fluorescence image is not the first one.\n\n"
+                    "Update the plug-in to match this window (copy Auto_Worm_ROI.jar "
+                    "into Fiji's plugins folder and restart Fiji), or turn Brightfield "
+                    "ROI off and process again."),
                 parent=self.root)
             return
         if _imagej_bridge_pending():
@@ -1534,11 +1769,18 @@ class WormRoiGui:
         sorted_tiffs = sorted(tiffs)
         unsupported = []
         binary = []
+        stacks = []
         for path in sorted_tiffs:
             found = check_image(path)
             if found.code is None:
                 if found.warning == "binary":
                     binary.append(path.name)
+                continue
+            if found.code == "stack":
+                # 多层 TIFF 不再一律拒收。它是不是能处理，取决于明场ROI 有没有
+                # 打开、层号是多少，所以收进 stacks 等下面分别处理。check_image
+                # 本身保持纯函数不变，判定仍是同一处。
+                stacks.append((path.name, int(found.value)))
                 continue
             unsupported.append(self._tr("%s：%s", "%s: %s") % (
                 path.name, self._unsupported_reason(found)))
@@ -1567,6 +1809,69 @@ class WormRoiGui:
                     "then run again."),
                 parent=self.root)
             return
+        if stacks and not self.brightfield_roi_var.get():
+            # 需求 3：多层 TIFF 在未开启明场ROI 时的专用提示。它替代了 0.4.x 那句
+            # 笼统的「图像格式不支持」——那句话没说清该怎么办，而这里的下一步是
+            # 明确的：要么开明场ROI 指定层号，要么先拆成单页。
+            listed = "\n".join(self._tr("  %s：%d 层", "  %s: %d planes") % entry
+                               for entry in stacks[:10])
+            if len(stacks) > 10:
+                listed += self._tr("\n  …… 共 %d 张，以上列出前 10 张",
+                                   "\n  … %d in total; the first 10 are listed above") % len(stacks)
+            messagebox.showerror(
+                self._tr("需要打开明场ROI", "Brightfield ROI Required"),
+                self._tr(
+                    "需要打开明场ROI才可以处理多层TIFF。\n\n"
+                    "以下图像在第 1 层之外还有数据：\n",
+                    "Brightfield ROI must be turned on to process multi-plane TIFFs."
+                    "\n\nThese images carry data beyond plane 1:\n") +
+                listed +
+                self._tr(
+                    "\n\n请勾选左栏的「明场ROI」后重新处理：程序会在开始前询问荧光层和"
+                    "明场层的层号，明场层用来圈出 ROI，荧光层用来测量数值。\n"
+                    "若这一批不需要明场图，请先用 ImageJ 的 "
+                    "Image > Stacks > Stack to Images 把文件拆成单页 TIFF，"
+                    "只保留要测量的那一层，再重新处理。",
+                    "\n\nTurn on Brightfield ROI in the left panel and process again: "
+                    "the program will ask which plane holds the fluorescence image and "
+                    "which holds the brightfield one, draw the ROIs on the brightfield "
+                    "plane and take the measurements from the fluorescence plane.\n"
+                    "If this batch has no brightfield image, split the files into "
+                    "single-plane TIFFs first with Image > Stacks > Stack to Images, "
+                    "keep the plane you want to measure, and process again."),
+                parent=self.root)
+            return
+        fluorescence_plane, brightfield_plane = 1, 1
+        if stacks:
+            # 需求 1：每批问一次，整批通用。这里仍在主线程、批量线程尚未创建，
+            # 所以取消路径没有任何副作用——没建目录、没禁用控件、没写日志。
+            planes = self._prompt_planes()
+            if planes is None:
+                return
+            fluorescence_plane, brightfield_plane = planes
+            deepest = max(planes)
+            too_shallow = [entry for entry in stacks if entry[1] < deepest]
+            if too_shallow:
+                messagebox.showerror(
+                    self._tr("层号超出文件的层数", "Plane Number Beyond the File"),
+                    self._tr(
+                        "这些多层 TIFF 没有第 %d 层（要处理荧光层 %d、明场层 %d）：\n\n",
+                        "These multi-plane TIFFs have no plane %d (fluorescence plane "
+                        "%d, brightfield plane %d):\n\n") % (
+                            deepest, fluorescence_plane, brightfield_plane) +
+                    "\n".join(self._tr("  %s：只有 %d 层", "  %s: only %d planes") % entry
+                              for entry in too_shallow[:10]) +
+                    self._tr("\n\n请重新核对层号后重试。",
+                             "\n\nCheck the plane numbers and try again."),
+                    parent=self.root)
+                return
+            self.fluorescence_plane_var.set(fluorescence_plane)
+            self.brightfield_plane_var.set(brightfield_plane)
+        else:
+            # 整批都是单层图：没有层可选，两个层号都是 1。明场ROI 开着也一样 ——
+            # 每张图都按单层图处理，ROI 与测量都来自第 1 层，通知里报第 2 层会是
+            # 假话。用户配的那两个数只作下次对话框的默认值，不当作本批的事实。
+            fluorescence_plane = brightfield_plane = 1
         collisions = find_stem_collisions([str(path) for path in sorted_tiffs])
         if collisions:
             messagebox.showerror(
@@ -1687,6 +1992,13 @@ class WormRoiGui:
             segment_start=segment_start,
             segment_end=segment_end,
             measurement_backend="imagej" if IMAGEJ_MEASUREMENT_MODE else "python",
+            brightfield_roi=bool(self.brightfield_roi_var.get()),
+            # 两个整数在上面的预检里已经问过并确认过，这里只是把它们传下去；批量
+            # 线程里不会再弹任何对话框。
+            fluorescence_plane=fluorescence_plane,
+            brightfield_plane=brightfield_plane,
+            brightfield_checkpoint_path=str(BRIGHTFIELD_MODEL_CONFIG["checkpoint"]),
+            brightfield_tip_checkpoint_path=str(BRIGHTFIELD_MODEL_CONFIG["tip_checkpoint"]),
             should_cancel=lambda: self.stop_requested,
         )
         self.stop_requested = False
@@ -1712,9 +2024,16 @@ class WormRoiGui:
             "segment_selection": bool(self.segment_selection_var.get()),
             "segment_start": segment_start,
             "segment_end": segment_end,
+            # 桥接通知要按这批的模式报层号，所以与 batch_kwargs 同源，都取上面
+            # 预检里确认过的值，而不是左栏配置里那两个（它们只是对话框的默认值，
+            # 单层图整批时与事实不符）。
+            "brightfield_roi": bool(self.brightfield_roi_var.get()),
+            "fluorescence_plane": fluorescence_plane,
+            "brightfield_plane": brightfield_plane,
         }
         self.qc_status.clear()
         self.qc_attention.clear()
+        self.qc_planes.clear()
         self._set_processing_controls(True)
         self._terminal_write("\n" + "=" * 72 + "\n", "muted")
         self._terminal_write(self._tr(
@@ -1730,6 +2049,17 @@ class WormRoiGui:
                      f"Expected worms: n={worm_count}; exact count required\n"), "info")
         enabled = self._tr("已开启", "enabled")
         disabled = self._tr("已关闭", "disabled")
+        if self.brightfield_roi_var.get():
+            self._terminal_write(self._tr(
+                "明场ROI：已开启；荧光层 %d，明场层 %d\n" % (
+                    int(self.fluorescence_plane_var.get()),
+                    int(self.brightfield_plane_var.get())),
+                "Brightfield ROI: enabled; fluorescence plane %d, brightfield plane %d\n" % (
+                    int(self.fluorescence_plane_var.get()),
+                    int(self.brightfield_plane_var.get()))), "info")
+        else:
+            self._terminal_write(
+                self._tr("明场ROI：已关闭\n", "Brightfield ROI: disabled\n"), "info")
         self._terminal_write(
             self._tr("平滑修复：%s\n", "Smoothing repair: %s\n") %
             (enabled if self.shape_refinement_var.get() else disabled), "info")
@@ -1866,11 +2196,14 @@ class WormRoiGui:
         self.active_job = None
         if IMAGEJ_BRIDGE_DIR:
             failures = list(job.get("failures", ())) if job else []
+            # 明场批次要按荧光层测量，所以层号随通知一起过去；关闭时是 (1, 1)。
+            planes = _bridge_planes(job)
             if return_code == 0 and not self.stop_requested and job:
                 self._notify_imagej(
                     "complete", str(job["input_dir"]), str(job["output_dir"]),
                     self._failure_message(failures),
-                    successful_images=self._successful_images(job, failures))
+                    successful_images=self._successful_images(job, failures),
+                    planes=planes)
             elif self.stop_requested:
                 # A stopped batch still finished some images, and run_gui_batch
                 # keeps their ROI sets and summary rows on purpose -- the README
@@ -1890,7 +2223,7 @@ class WormRoiGui:
                     self._notify_imagej(
                         "complete", str(job["input_dir"]), str(job["output_dir"]),
                         message + ("\n\n" + failed_text if failed_text else ""),
-                        successful_images=stopped)
+                        successful_images=stopped, planes=planes)
                 else:
                     self._notify_imagej("cancelled", "", "")
             else:
@@ -1969,11 +2302,12 @@ class WormRoiGui:
 
     def _notify_imagej(
             self, status: str, input_dir: str, output_dir: str, message: str = "",
-            successful_images=None) -> None:
+            successful_images=None, planes: tuple[int, int] = (1, 1)) -> None:
         if not IMAGEJ_BRIDGE_DIR or self.bridge_notification_written:
             return
         error = _write_imagej_bridge_file(
-            status, input_dir, output_dir, message, successful_images=successful_images)
+            status, input_dir, output_dir, message, successful_images=successful_images,
+            qc_plane=planes[0], measured_plane=planes[1])
         if error is None:
             self.bridge_notification_written = True
         else:
@@ -2099,7 +2433,11 @@ class WormRoiGui:
             return
         from batch_worm_roi import check_image
         found = check_image(path)
-        if found.code is not None:
+        # 决策 5：明场ROI 开启时标注画在明场层上。圈出的 ROI 就是画在这一层上的，
+        # 画在荧光层上会与虫子对不上，箭头保存后也落不到明场圈出的虫身上。层号
+        # 沿用左栏那个值 —— 标注是一张一张打开的，没有「整批问一次」的时机。
+        brightfield_annotation = found.code == "stack" and bool(self.brightfield_roi_var.get())
+        if found.code is not None and not brightfield_annotation:
             # _start_processing refuses these too. Annotating one first would
             # mean drawing arrows on plane 0 of an image the batch rejects, and
             # only finding out when the run is started.
@@ -2122,11 +2460,32 @@ class WormRoiGui:
                         path.name, detail),
                 parent=self.root)
             return
+        annotation_plane = 1
+        if brightfield_annotation:
+            annotation_plane = int(self.brightfield_plane_var.get())
+            frame_count = int(found.value)
+            if annotation_plane > frame_count:
+                detail = self._tr(
+                    "层号超出文件的层数：%s 只有 %d 层，没有第 %d 层。\n\n"
+                    "请核对左栏「明场ROI」的明场层层号后重试。" % (
+                        path.name, frame_count, annotation_plane),
+                    "Plane out of range: %s has %d planes, so there is no plane %d.\n\n"
+                    "Check the brightfield plane number under Brightfield ROI." % (
+                        path.name, frame_count, annotation_plane))
+                if quiet:
+                    self._terminal_write(self._tr(
+                        "该图像无法标注：%s\n" % detail, "Cannot annotate: %s\n" % detail),
+                        "warning")
+                else:
+                    messagebox.showerror(
+                        self._tr("层号超出文件的层数", "Plane Out Of Range"), detail,
+                        parent=self.root)
+                return
         try:
             from manual_head_annotation import (
                 enhanced_tiff_rgb, load_image_annotations, load_image_boundary_guides,
                 load_image_exclusion_regions)
-            image = enhanced_tiff_rgb(path)
+            image = enhanced_tiff_rgb(path, plane=annotation_plane)
             arrows = load_image_annotations(path, current_size=image.size)
             boundaries = load_image_boundary_guides(path, current_size=image.size)
             exclusions = load_image_exclusion_regions(path, current_size=image.size)
@@ -2145,8 +2504,12 @@ class WormRoiGui:
         self.preview_grid.grid_remove()
         self.page_label.master.grid_remove()
         self.annotation_frame.grid()
-        self.monitor_panel.title_label.configure(  # type: ignore[attr-defined]
-            text=self._tr("监视器 · 手动标注 · ", "Monitor · Manual annotation · ") + path.name)
+        title = self._tr("监视器 · 手动标注 · ", "Monitor · Manual annotation · ") + path.name
+        if annotation_plane > 1:
+            # 说明白底图取自哪一层：这张图画在明场层上，而测量走的是荧光层。
+            title += self._tr(f" · 第 {annotation_plane} 层（明场）",
+                              f" · plane {annotation_plane} (brightfield)")
+        self.monitor_panel.title_label.configure(text=title)  # type: ignore[attr-defined]
         self._add_recent(path)
         self._annotation_mode_changed()
         self._update_annotation_count()
@@ -2614,8 +2977,15 @@ class WormRoiGui:
         current_page = self.qc_page + 1 if pages else 0
         self.page_label.configure(text=self._tr(
             f"第 {current_page} / {pages} 页", f"Page {current_page} / {pages}"))
+        # 需求 2：明场ROI 启动时监视器上只有明场 QC，所以状态行直接写明，免得
+        # 用户以为看到的是荧光底图。判据与每张图的标注同源（两个层号不同）。
+        brightfield_qc = any(qc != measured
+                             for qc, measured in self.qc_planes.values())
         self.monitor_status.configure(text=(self._tr(
-            f"共 {len(self.qc_files)} 张 QC 图", f"{len(self.qc_files)} QC images")
+            f"共 {len(self.qc_files)} 张 QC 图（明场）" if brightfield_qc
+            else f"共 {len(self.qc_files)} 张 QC 图",
+            f"{len(self.qc_files)} QC images (brightfield)" if brightfield_qc
+            else f"{len(self.qc_files)} QC images")
             if self.qc_files else self._tr("尚无 QC 图", "No QC images")))
         self.prev_button.configure(state="normal" if self.qc_page > 0 else "disabled")
         self.next_button.configure(state="normal" if self.qc_page + 1 < pages else "disabled")
@@ -2651,6 +3021,15 @@ class WormRoiGui:
                     if image_name and status:
                         self.qc_status[image_name.lower()] = status
                         self.qc_attention[image_name.lower()] = attention
+                    try:
+                        qc_plane = int(row.get("qc_plane") or 0)
+                        measured_plane = int(row.get("measured_plane") or 0)
+                    except ValueError:
+                        qc_plane = measured_plane = 0
+                    if image_name and qc_plane >= 1 and measured_plane >= 1:
+                        # 旧版本的汇总表没有这两列，读出来是 0，那就什么都不记：
+                        # 监视器会说不出层号，而不是编一个出来。
+                        self.qc_planes[image_name.lower()] = (qc_plane, measured_plane)
         except (OSError, UnicodeDecodeError, csv.Error):
             # UnicodeDecodeError is the one that matters: this file is the QC
             # workflow's own output and the README sends the experimenter to it,
@@ -2691,6 +3070,20 @@ class WormRoiGui:
                 return bool(attention)
         return False
 
+    def _planes_for_qc(self, qc_path: Path) -> tuple[int, int] | None:
+        """(qc_plane, measured_plane) for this QC, or None when unknown.
+
+        None rather than a pair of ones for "unknown": a summary written before
+        the plane columns existed genuinely does not say, and printing a plane
+        number for it would be inventing a fact about somebody's data.
+        """
+        stem = qc_path.stem
+        source_stem = stem[:-3] if stem.endswith("_QC") else stem
+        for image_name, planes in self.qc_planes.items():
+            if Path(image_name).stem.lower() == source_stem.lower():
+                return planes
+        return None
+
     def _source_label_for_qc(self, qc_path: Path) -> str:
         source = self._source_path_for_qc(qc_path)
         stem = qc_path.stem
@@ -2702,7 +3095,14 @@ class WormRoiGui:
                 display = str(source)
         else:
             display = f"{source_stem}.tif"
-        return self._tr(f"来源：{display}", f"Source: {display}")
+        label = self._tr(f"来源：{display}", f"Source: {display}")
+        planes = self._planes_for_qc(qc_path)
+        # 需求 2：说清 QC 来自哪张 tif 的第几层。两个层号不同，才说明这张 QC 真的
+        # 取自另一层（单层图与关闭功能时两层都是 1，标「明场」会是假话）。
+        if planes is not None and planes[0] != planes[1]:
+            label += self._tr(f" · 第 {planes[0]} 层（明场）",
+                              f" · plane {planes[0]} (brightfield)")
+        return label
 
     def _source_path_for_qc(self, qc_path: Path) -> Path | None:
         stem = qc_path.stem
@@ -2954,6 +3354,31 @@ def main() -> int:
                     return float(sys.argv[position + 1])
                 except (ValueError, IndexError, TypeError):
                     return default
+            def headless_int(flag, default):
+                try:
+                    position = sys.argv.index(flag)
+                    return int(sys.argv[position + 1])
+                except (ValueError, IndexError, TypeError):
+                    return default
+            def headless_text(flag, default):
+                try:
+                    position = sys.argv.index(flag)
+                    value = sys.argv[position + 1].strip()
+                    return value or default
+                except (ValueError, IndexError, TypeError):
+                    return default
+            # 无界面自检没有对话框可弹，层号只能从命令行来；不写就用 1 / 2，
+            # 与界面里那三个配置项的默认值一致。
+            brightfield = "--brightfield-roi" in sys.argv
+            fluorescence_plane = headless_int("--fluorescence-plane", 1)
+            brightfield_plane = headless_int("--brightfield-plane", 2)
+            brightfield_checkpoint = headless_text(
+                "--brightfield-checkpoint", str(BRIGHTFIELD_MODEL_CONFIG["checkpoint"]))
+            brightfield_tip_checkpoint = headless_text(
+                "--brightfield-tip-checkpoint", str(BRIGHTFIELD_MODEL_CONFIG["tip_checkpoint"]))
+            if brightfield:
+                headless_log("明场ROI：已开启；荧光层 %d，明场层 %d" %
+                             (fluorescence_plane, brightfield_plane))
             from batch_worm_roi import run_gui_batch
             run_gui_batch(
                 folder, "", str(config["checkpoint"]), str(config["tip_checkpoint"]),
@@ -2963,10 +3388,17 @@ def main() -> int:
                 segment_selection=segment_enabled,
                 segment_start=headless_float("--segment-start", 0.0),
                 segment_end=headless_float("--segment-end", 1.0),
-                measurement_backend="imagej" if IMAGEJ_MEASUREMENT_MODE else "python")
+                measurement_backend="imagej" if IMAGEJ_MEASUREMENT_MODE else "python",
+                brightfield_roi=brightfield,
+                fluorescence_plane=fluorescence_plane,
+                brightfield_plane=brightfield_plane,
+                brightfield_checkpoint_path=brightfield_checkpoint,
+                brightfield_tip_checkpoint_path=brightfield_tip_checkpoint)
             _write_imagej_bridge_file(
                 "complete", str(Path(folder).resolve()),
-                str(Path(folder).resolve() / "_auto_roi"))
+                str(Path(folder).resolve() / "_auto_roi"),
+                qc_plane=brightfield_plane if brightfield else 1,
+                measured_plane=fluorescence_plane if brightfield else 1)
             headless_log("HEADLESS_OK")
             return 0
         except Exception as exc:

@@ -4,7 +4,9 @@
 >
 >该插件用于批量自动圈画线虫，生成ROI；荧光统计与 CTCF 仍交给 ImageJ/Fiji 进行。插件不改变原有的荧光统计与 CTCF 处理过程，只是将这一步自动化。
 >
->当前版本（0.4.3 CUDA for ImageJ（Java 8））是为使用NVIDIA系列显卡，且  ImageJ 内置 Java 版本为 Java 8 的用户开发的测试版。具体详见 [测试版说明](#测试版说明)
+>当前版本（0.5.0 CUDA for ImageJ（Java 8））是为使用NVIDIA系列显卡，且  ImageJ 内置 Java 版本为 Java 8 的用户开发的测试版。具体详见 [测试版说明](#测试版说明)
+>
+>0.5.0 版本新增了**明场ROI**功能，现在可以对含荧光层和明场层的多层 TIFF 进行处理。具体详见[功能详解](#功能详解)
 >
 >本插件使用 deepseek-V4.1-flash 和 ChatGPT 5.6 sol 协助开发，由 ChatGPT 5.6 sol 和 ChatGPT 6 Astra 审查。
 
@@ -20,7 +22,9 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
 
 ## 测试版说明
 
-0.4.3 CUDA for ImageJ（Java 8）在开发机上跑通了大部分功能。但是，部分异常情况因缺乏数据仅进行了代码审查，未能进行真实数据测试。此外，可能还存在未能够考虑到的异常情况，需要用户进行反馈。
+0.5.0 CUDA for ImageJ（Java 8）在开发机上跑通了大部分功能。但是，部分异常情况因缺乏数据仅进行了代码审查，未能进行真实数据测试。此外，可能还存在未能够考虑到的异常情况，需要用户进行反馈。
+
+**本版本新增的「明场ROI」自带明场权重**（`AutoWormImageJ\models\brightfield-0.1.0\` 的 `worm.pt` + `tip.pt`），是从低清模型微调来的，训练用了 6 张人工标注的明场图。若这两个文件缺失（解压不完整、被挪走），勾选后程序会明确报错并拒绝启动，**不会**退回高清 / 低清模型。**同样的，这个模型的识别结果也需要人工核对**。
 
 另外，本插件中的模型使用 NVIDIA GeForce RTX 4060 Laptop 进行训练，暂未在其他型号的 NVIDIA GPU 上进行过测试。如遇硬件兼容问题，请一并反馈。
 
@@ -47,9 +51,9 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
       models/                分割模型，外置便于单独替换
       _internal/             运行库（Python、PyTorch、CUDA、cuDNN…）
       licenses/              第三方组件许可全文
-  README_0.4.3_ImageJ_Java8.md     本文件
-  CHANGELOG_0.4.3.md
-  VALIDATION_0.4.3.md
+  README_0.5.0_ImageJ_Java8.md     本文件
+  CHANGELOG_0.5.0.md
+  VALIDATION_0.5.0.md
   LICENSE
 ```
 
@@ -57,6 +61,7 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
 - `licenses/` 不要删，理由见[许可与第三方组件](#许可与第三方组件)。
 - 四份文档（README / CHANGELOG / VALIDATION / LICENSE）放在哪里都行，不影响运行。
 - 不愿意解压到根目录的话，把 `plugins/` 下的两个条目手工复制到 `<Fiji 根目录>/plugins/` 下效果相同。
+- models/ 文件夹中 0.1.x 为高清图片模型，0.2.x 为低清图片模型，brightfield-0.1.x 为明场层分割模型。
 
 **最终用户不需要安装 Python，也不需要安装 CUDA Toolkit**。PyTorch、CUDA 13.2、cuDNN、OpenCV、SciPy 和 MSVC 运行库都已经放进 `AutoWormImageJ`。但用户的电脑需要安装 **580 或更高版本** 的 NVIDIA 驱动。GUI 界面里的「设置 > CUDA 与系统信息」可以查看 GPU、驱动、PyTorch、CUDA、cuDNN 状态；开始处理前插件也会自动检查一遍。
 
@@ -64,7 +69,7 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
 
 1. 打开 ImageJ。
 2. 运行插件：`Plugins > Auto Worm ROI` 子菜单里的第一项，名称形如 `Auto Worm ROI <版本号>`。菜单文字用纯英文 ASCII，以兼容 Fiji 1.54p 读取 `plugins.config` 时的系统编码行为；启动后的界面仍然可以选中文或英文。
-3. 在界面里选好当前文件夹、图像类型和预设虫数，按需要勾选「平滑修复」/「手动标注」/「部分圈画」，然后点「开始处理」。
+3. 在界面里选好当前文件夹、图像类型和预设虫数，按需要勾选「平滑修复」/「手动标注」/「部分圈画」/「明场ROI」，然后点「开始处理」。
 4. 处理完成后界面保持打开，ImageJ 自动接收并测量本批结果。可以接着选别的文件夹继续处理。
 5. 关闭界面即结束插件。
 
@@ -89,12 +94,27 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
 | 平滑修复 | 独立的轮廓质量检测与保守形状修复，作用在模型分好的结果上 |
 | 手动标注（头向/分界/排除区） | 启用后读取你标注的头向箭头、人工分界和背景排除区 |
 | 部分圈画（需手动标注头向） | 只圈虫体的一段，而不是整条 |
+| 明场ROI | 多层 TIFF 的开关：开启后用**明场层**圈 ROI、用**荧光层**出数值。详见「功能详解 → 明场ROI」 |
 
 ## 功能详解
 
 ### 图像类型与模型
 
 两套模型分别在不同采集条件下训练：`高清晰度图像` 与 `低清晰度图像`。选错不会报错，只是分割质量下降，所以换采集设备或换放大倍率时值得各试一遍，用每张图的 `*_QC.png` 对比。模型是 `AutoWormImageJ\models\` 下的普通文件，可以单独替换。
+
+### 明场ROI
+
+用途：一张 TIFF 里同时存在荧光层和明场层时，**不必再拆页**。勾选左栏的「明场ROI」后点「开始处理」，程序会问一次（整批通用）荧光层和明场层分别是第几层：
+
+- **明场层用来圈出 ROI**，分割、平滑修复、手动标注、QC 图都作用在这一层；
+- **荧光层用来测量数值**，每条虫的均值 / 面积等来自这一层。
+
+ImageJ 测量时按你指定的荧光层层号自行定位，与窗口里当前显示的切片无关。监视器上每张 QC 图都会标出来自哪个文件的第几层（`来源：xxx.tif · 第 2 层（明场）`），并且**只展示明场 QC**，不会另外展示荧光 QC。汇总表里新增 `brightfield_roi_enabled`、`qc_plane`、`measured_plane` 三列记录这一批的
+层号；`brightfield_model_sha256` 列记录这次用的明场权重的指纹，当明场ROI关闭时为空。
+
+文件夹里混有单层 TIFF 时，它们照常按当前「图像类型」的模型处理，不受层号影响。标注按文件名保存、不区分层，换层重跑会沿用旧箭头。
+
+**明场模型随包发布**，在 `AutoWormImageJ\models\brightfield-0.1.0\`（`worm.pt` + `tip.pt`），不需要另外下载。这两个文件缺任何一个，勾选「明场ROI」后程序都会明确报错并拒绝启动，**不会**退回高清 / 低清模型去凑合；提示里会写清楚缺哪个文件、该在哪儿。这段提示只会在**发布包不完整**（解压坏了、文件被挪走）时出现，这种情况重新解压一份完整的包即可。
 
 ### 预设虫数 n
 
@@ -151,6 +171,8 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
 
 同一张图同时存在两种记录时，**按标注类型分别合并**：sidecar 里非空的一类覆盖文件夹记录，为空的一类沿用文件夹记录，因此只画了头向箭头的 sidecar 不会丢掉该图在界面里画的人工分界。在界面里保存某张图时，如果该图已有 sidecar，同一份结果会一并写回 sidecar，所以界面里的删除和改动都会立即生效。
 
+**明场ROI 与标注：** 开启「明场ROI」处理多层 TIFF 时，标注界面的底图显示的是**明场层**——ROI 正是在这层上圈出来的，箭头画在这层才对得上。另外，标注**按文件名保存、不区分层**：同一张多层 TIFF 换一个明场层重跑，原来画的箭头会照旧沿用。这是各层栅格几何相同带来的自然结果，但换层前请确认旧标注仍然适用。
+
 ⚠️ 同一张图的标注请不要在两个界面之间来回维护。以下情形目前无法从 ImageJ 一侧完成：
 
 - 该图的分界只存在于 GUI 界面写出的 `_manual_head_annotations.json` 里，而你在 ROI Manager 中删掉 `boundary_` 后重新 `Save Current Annotation`——此时 sidecar 的 `boundaries` 是空数组，合并规则会回落到文件夹记录，那条分界仍然生效。
@@ -177,15 +199,17 @@ ROI 生成后会交回 ImageJ：插件用 ImageJ 本体的 `ImageStatistics` 统
 
 ## 支持的图像格式
 
-只处理**单通道、单层、单时间点**的灰度 TIFF：8 位和 16 位均可，**16 位大端字节序（`I;16B`）同样支持**。
+**未开启「明场ROI」时**只处理**单通道、单层、单时间点**的灰度 TIFF：8 位和 16 位均可，**16 位大端字节序（`I;16B`）同样支持**。
 
-彩色 TIFF（RGB、RGBA、调色板、带 alpha 的灰度、CMYK）和多页 TIFF（多通道、Z 堆栈、时间序列，含 ImageJ 超栈和 OME-TIFF）会被拒绝；改名成 `.tif` 的 PNG / BMP 等非 TIFF 文件也会被拒绝。
+彩色 TIFF（RGB、RGBA、调色板、带 alpha 的灰度、CMYK）会被拒绝；改名成 `.tif` 的 PNG / BMP 等非 TIFF 文件也会被拒绝。**多页 TIFF（多通道、Z 堆栈、时间序列，含 ImageJ 超栈和 OME-TIFF）在未开启「明场ROI」时会被拒绝**，开启后按下文说明处理；这一条替代了 0.4.3 中直接拒绝多层 TIFF 的做法。
 
-**例外：多余平面全是 0 的图会放行。** MetaMorph 等采集软件会给每张图附加一个空的 overlay 平面，这类文件真正的数据仍在第一页，附加平面没有任何信号、不可能量出错误的数值，因此不予拒绝，只在日志里说明，例如 `Phsp16.2 0101-70-1.tif: 1 empty extra plane(s); treated as overlay`。需要注意的是 ImageJ **不会**跳过这个平面，它会把该图显示成 2 个切片，测量前请确认窗口中停在的是第 1 个切片。
+**开启「明场ROI」可以处理多层 TIFF。** 勾选左栏的「明场ROI」后，点「开始处理」时程序会**问一次**（整批通用）荧光层和明场层分别是第几层：**明场层用来圈出 ROI，荧光层用来测量数值**。ImageJ 测量时按你指定的荧光层层号自行定位，与窗口中当前显示的切片无关。文件夹里混有单层 TIFF 时它们照常处理，不受层号影响。明场权重随包发布（`AutoWormImageJ\models\brightfield-0.1.0\`），这个开关开箱即可用；万一模型文件缺失，程序会明确报错并拒绝启动，不会退回高清 / 低清模型，缺哪个文件、放在哪儿，弹窗里会写清楚。
 
-拒绝的原因是程序只读取文件的**第一页**。批处理里除当前在 ImageJ 中打开的那一张之外，其余图像都由 ImageJ 从磁盘重新打开并测量第 1 个平面，与程序一致；但**当前打开的那一张**（也就是插件传给原界面的那一张），ImageJ 测的是窗口中当前显示的通道、Z 层和时间点。只要它停在别的平面上，圈出的 ROI 与实际测量值就会指向不同平面，而且**全程不报任何错**。因此检查在处理开始前进行，覆盖整批：只要有一张不符合，就按原因分组列出文件名并拒绝整批，不会先跑一部分再中断。一次列出的文件名有上限，超过时会补一句「共 N 张不合格」，不会漏报数量。
+**例外：多余平面全是 0 的图会放行。** MetaMorph 等采集软件可能会给每张图附加一个空的 overlay 平面，这类文件真正的数据仍在第一页，附加平面没有任何信号、不可能量出错误的数值，因此不予拒绝，只在日志里说明，例如 `Phsp16.2 0101-70-1.tif: 1 empty extra plane(s); treated as overlay`。需要注意的是 ImageJ **不会**跳过这个平面，它会把该图显示成 2 个切片，测量前请确认窗口中停在的是第 1 个切片。**开启明场ROI 后这条例外照旧**——层号对话框只对第 1 层之外**有数据**的文件出现，空 overlay 图不会被问层号。
 
-多通道 / 堆栈数据请先用 ImageJ 的 `Image > Stacks > Stack to Images` 拆成单页 TIFF，只保留要测量的通道，再重新处理。
+未开启明场ROI 时下列拒绝的原因：程序只读取文件的**第一页**。批处理里除当前在 ImageJ 中打开的那一张之外，其余图像都由 ImageJ 从磁盘重新打开并测量第 1 个平面，与程序一致；但**当前打开的那一张**（也就是插件传给原界面的那一张），ImageJ 测的是窗口中当前显示的通道、Z 层和时间点。只要它停在别的平面上，圈出的 ROI 与实际测量值就会指向不同平面，而且**全程不报任何错**。因此检查在处理开始前进行，覆盖整批：只要有一张不符合，就按原因分组列出文件名并拒绝整批，不会先跑一部分再中断。一次列出的文件名有上限，超过时会补一句「共 N 张不合格」，不会漏报数量。**开启明场ROI 后，多层 TIFF 由层号对话框接管，不再落入这条拒绝。**
+
+多通道 / 堆栈数据有两条路：**开启「明场ROI」并指定层号**（推荐，不用改动原文件）；或者先用 ImageJ 拆成单页 TIFF，只保留要测量的通道，再重新处理。
 
 二值（1 位）图像不在上述格式之列，但**不会被拒绝**：程序在开始前提示「本模型未针对二值图片进行训练」，确认后照常处理。两个模型都是在 8 位和 16 位采集图上训练的，二值图的分割结果可能不准确，所以提示保留，只是不挡住流程。
 
@@ -265,13 +289,16 @@ RawCTCF = worm RawIntDen - worm PixelArea × background raw Mean
 少的那张处理失败了。到输出文件夹 `other` 子目录下的 `batch_summary.csv` 里找 `qc_status` 为 `FAILED` 的行，`error` 列就是原因。
 
 **整批被拒绝，说图像不合格。**
-按弹窗里列出的文件名和原因处理：多通道 / 堆栈用 `Image > Stacks > Stack to Images` 拆开，损坏或改名的非 TIFF 文件转成正常的单页灰度 TIFF。
+若原因是白框「需要打开明场ROI才可以处理多层TIFF」，见下一条；其余情况按弹窗里列出的文件名和原因处理：多通道 / 堆栈用 `Image > Stacks > Stack to Images` 拆开，损坏或改名的非 TIFF 文件转成正常的单页灰度 TIFF。
+
+**提示「需要打开明场ROI才可以处理多层TIFF」。**
+勾选左栏的「明场ROI」后重新处理。程序会在开始前问一次（整批通用）荧光层和明场层分别是第几层，**明场层用来圈出 ROI，荧光层用来测量数值**；ImageJ 按你给的荧光层层号自行定位，与窗口里当前显示的切片无关。若这一批确实不需要明场图，就用 `Image > Stacks > Stack to Images` 把文件拆成单页 TIFF，只保留要测量的那一层。**这条提示替代了 0.4.3 中直接拒绝多层 TIFF 的做法。** 明场权重随包发布，勾选后即可用；只有发布包不完整（解压坏了、文件被挪走）时才会报错拒绝启动，不会退回高清 / 低清模型。
 
 **日志里出现 `Could not remove partial results for ...`。**
 有一张失败图的结果文件没删掉（通常是 QC 图正被看图软件打开）。关掉看图软件，照日志里的文件名手动删除。
 
-**图在 ImageJ 里显示成多个切片。**
-这是带空 overlay 平面的图，属于放行的情况。测量前确认窗口停在**第 1 个切片**。
+**图在 ImageJ 里显示成多个切片，但我并没有拍多荧光/明场图。**
+这是带空 overlay 平面的图，属于放行的情况。**不开「明场ROI」**进行测量前需要确认窗口停在**第 1 个切片**。**开启「明场ROI」时不同**：插件会按你指定的荧光层层号自行定位要测量的平面，与窗口中当前显示的切片无关。
 
 **虫数识别不对。**
 先确认「图像类型」选的是不是匹配采集条件的模型，再核对「预设虫数 n」。边界粘连严重的图可以试「平滑修复」。都不行就用「手动标注」画头向箭头或人工分界。
@@ -313,7 +340,7 @@ NVIDIA 未对本软件作任何形式的认可或担保。使用随软件分发�
 要求 JDK，以及装有 PyInstaller、PyTorch、OpenCV、SciPy、Pillow、roifile 的 Python 环境：
 
 ```bat
-build_0.4.3.bat "完整路径\python.exe"
+build_0.5.0.bat "完整路径\python.exe"
 ```
 
 构建最后一步会把 `licenses\` 整个复制进 `dist\AutoWormImageJ\licenses\`；该目录缺失时构建报错退出，不会静默产出一个没有许可声明的包。
@@ -338,7 +365,9 @@ python make_release.py --previous-exe "<上一版的 AutoWormGUI.exe>"
 >
 >This plug-in batch-draws ROIs around nematodes automatically. Fluorescence quantification and CTCF are still performed by ImageJ/Fiji. The plug-in does not change how fluorescence is measured or how CTCF is computed; it only automates the ROI-drawing step.
 >
->The current version (0.4.3 CUDA for ImageJ (Java 8)) is a beta build for users with an NVIDIA GPU whose ImageJ runs on Java 8. See [Beta Notice](#beta-notice) for details.
+>The current version (0.5.0 CUDA for ImageJ (Java 8)) is a beta build for users with an NVIDIA GPU whose ImageJ runs on Java 8. See [Beta Notice](#beta-notice) for details.
+>
+>0.5.0 adds the **Brightfield ROI** feature: a multi-plane TIFF that carries both a fluorescence plane and a brightfield plane can now be processed. See [Feature Details](#feature-details).
 >
 >This plug-in was developed with the assistance of deepseek-V4.1-flash and ChatGPT 5.6 sol, and reviewed by ChatGPT 5.6 sol and ChatGPT 6 Astra.
 
@@ -354,7 +383,9 @@ This path **does not go through `Analyzer`**: `Analyzer` reads the global settin
 
 ## Beta Notice
 
-0.4.3 CUDA for ImageJ (Java 8) has most of its functionality working on the development machine. Some error paths, however, have only been code-reviewed because of a lack of data, and were not tested on real data. There may also be error conditions I have not thought of; user feedback is welcome.
+0.5.0 CUDA for ImageJ (Java 8) has most of its functionality working on the development machine. Some error paths, however, have only been code-reviewed because of a lack of data, and were not tested on real data. There may also be error conditions I have not thought of; user feedback is welcome.
+
+**The "Brightfield ROI" feature added in this version ships with its own weights** (`AutoWormImageJ\models\brightfield-0.1.0\`: `worm.pt` + `tip.pt`), fine-tuned from the low-clarity model on six hand-annotated brightfield images. Should those files be missing — a broken extraction, a file moved out of the way — the program reports the error explicitly and refuses to start, and **never** falls back to the high- or low-clarity model. **Likewise, this model's segmentation results need to be checked by hand as well.**
 
 In addition, the models in this plug-in were trained on an NVIDIA GeForce RTX 4060 Laptop and have not been tested on other NVIDIA GPU models. If you hit hardware compatibility problems, please report them as well.
 
@@ -382,9 +413,9 @@ After extraction it should look like this:
       models/                segmentation models, external so they can be swapped individually
       _internal/             runtime libraries (Python, PyTorch, CUDA, cuDNN…)
       licenses/              full text of third-party licenses
-  README_0.4.3_ImageJ_Java8.md     this file
-  CHANGELOG_0.4.3.md
-  VALIDATION_0.4.3.md
+  README_0.5.0_ImageJ_Java8.md     this file
+  CHANGELOG_0.5.0.md
+  VALIDATION_0.5.0.md
   LICENSE
 ```
 
@@ -392,6 +423,7 @@ After extraction it should look like this:
 - Do not delete `licenses/`; the reason is in [License and Third-Party Components](#license-and-third-party-components).
 - The four documents (README / CHANGELOG / VALIDATION / LICENSE) can go anywhere; their location does not affect operation.
 - If you would rather not extract into the root folder, manually copying the two entries under `plugins/` into `<Fiji root>/plugins/` has the same effect.
+- Inside the `models/` folder, `0.1.x` holds the high-clarity image models, `0.2.x` the low-clarity image models, and `brightfield-0.1.x` the brightfield-plane segmentation model.
 
 **End users do not need to install Python, and do not need to install the CUDA Toolkit.** PyTorch, CUDA 13.2, cuDNN, OpenCV, SciPy and the MSVC runtime are all bundled inside `AutoWormImageJ`. The user's machine does, however, need an NVIDIA driver of **version 580 or later**. "Settings > CUDA and system info" in the GUI shows the GPU, driver, PyTorch, CUDA and cuDNN status; the plug-in also runs the same check automatically before it starts processing.
 
@@ -399,7 +431,7 @@ After extraction it should look like this:
 
 1. Open ImageJ.
 2. Run the plug-in: the first item in the `Plugins > Auto Worm ROI` submenu, named something like `Auto Worm ROI <version>`. The menu text is plain English ASCII, to stay compatible with how Fiji 1.54p reads `plugins.config` under the system encoding; the window itself still offers Chinese or English.
-3. In the window, choose the current folder, the image type and the expected worm count, tick "smooth repair" / "manual annotation" / "partial outlining" as needed, then click "Start processing".
+3. In the window, choose the current folder, the image type and the expected worm count, tick "smooth repair" / "manual annotation" / "partial outlining" / "Brightfield ROI" as needed, then click "Start processing".
 4. When processing finishes the window stays open and ImageJ automatically receives and measures this batch's results. You can then pick another folder and keep going.
 5. Closing the window ends the plug-in.
 
@@ -424,12 +456,26 @@ To process the changes as well, save the image in ImageJ first and then invoke t
 | Smooth repair | Independent contour-quality checking plus conservative shape repair, applied on top of the model's output |
 | Manual annotation (head direction / boundary / exclusion) | When enabled, reads the head-direction arrows, manual boundaries and background exclusion regions you drew |
 | Partial outlining (requires manual head direction) | Outlines only one segment of the worm body rather than the whole worm |
+| Brightfield ROI | The switch for multi-plane TIFFs: when on, the **brightfield** plane is used to outline ROIs and the **fluorescence** plane to produce the numbers. See "Feature Details → Brightfield ROI" |
 
 ## Feature Details
 
 ### Image Type and Models
 
 The two models were trained under different acquisition conditions: `high-clarity image` and `low-clarity image`. Choosing the wrong one does not raise an error; segmentation quality simply drops. So when you change acquisition hardware or magnification it is worth trying both and comparing each image's `*_QC.png`. The models are ordinary files under `AutoWormImageJ\models\` and can be replaced individually.
+
+### Brightfield ROI
+
+Purpose: when a single TIFF carries a fluorescence plane and a brightfield plane at the same time, you no longer have to split it into pages. Tick "Brightfield ROI" in the left panel and click "Start processing"; the program asks **once** (for the whole batch) which plane holds the fluorescence and which holds the brightfield:
+
+- the **brightfield plane is used to outline the ROIs** — segmentation, smooth repair, manual annotation and the QC image all work on it;
+- the **fluorescence plane is used to produce the measurements** — each worm's mean, area and so on come from it.
+
+ImageJ locates the plane to measure from the fluorescence plane number you gave, independently of whichever slice happens to be displayed in the window. Every QC image in the monitor is labelled with the file and the plane it came from (`来源：xxx.tif · 第 2 层（明场）`), and **only brightfield QC is shown** — no separate fluorescence QC. The summary table gains three columns, `brightfield_roi_enabled`, `qc_plane` and `measured_plane`, recording this batch's plane numbers; the `brightfield_model_sha256` column holds the fingerprint of the brightfield weights used in this run, and is empty while Brightfield ROI is off.
+
+Single-plane TIFFs mixed into the same folder are still processed as usual with the model currently selected under "Image type", unaffected by the plane numbers. Annotations are stored per file name and not per plane, so re-running with a different brightfield plane reuses the arrows you already drew.
+
+**The brightfield model ships with this version**, in `AutoWormImageJ\models\brightfield-0.1.0\` (`worm.pt` + `tip.pt`); nothing extra to download. If either file is missing, ticking "Brightfield ROI" makes the program report the error explicitly and refuse to start — it **never** falls back to the high- or low-clarity model, and the dialog names the missing file and where it belongs. That dialog only appears when the release package is incomplete (a broken extraction, a file moved away); re-extract a complete package to fix it.
 
 ### Expected Worm Count n
 
@@ -486,6 +532,8 @@ You can also prepare ROIs in ImageJ's ROI Manager using the prefixes above and r
 
 When both records exist for the same image, they are **merged separately per annotation type**: a non-empty type in the sidecar overrides the folder record, while an empty type falls back to the folder record, so a sidecar that only has head-direction arrows will not lose the manual boundaries drawn for that image in the window. When you save an image in the window, if that image already has a sidecar the same result is written back to the sidecar too, so deletions and changes made in the window take effect immediately.
 
+**Brightfield ROI and annotations:** with "Brightfield ROI" on, the annotation view draws its base image from the **brightfield plane** — that is the plane the ROIs are outlined on, so arrows drawn on it are the ones that line up. Note also that annotations are stored **per file name, not per plane**: re-running the same multi-plane TIFF with a different brightfield plane reuses the arrows you already drew. That follows naturally from every plane sharing the same raster geometry, but check that the old annotations still apply before switching planes.
+
 ⚠️ Please do not maintain the annotations of the same image across both interfaces. The following cases cannot currently be done from the ImageJ side:
 
 - The image's boundary exists only in the `_manual_head_annotations.json` written by the GUI, and you delete `boundary_` in the ROI Manager and run `Save Current Annotation` again — the sidecar's `boundaries` is then an empty array, the merge rule falls back to the folder record, and that boundary still takes effect.
@@ -512,15 +560,17 @@ Every run writes `batch_summary.csv` into the output folder's `other` subfolder,
 
 ## Supported Image Formats
 
-Only **single-channel, single-plane, single-time-point** grayscale TIFFs are processed: 8-bit and 16-bit are both fine, and **16-bit big-endian (`I;16B`) is supported as well**.
+**While "Brightfield ROI" is off**, only **single-channel, single-plane, single-time-point** grayscale TIFFs are processed: 8-bit and 16-bit are both fine, and **16-bit big-endian (`I;16B`) is supported as well**.
 
-Colour TIFFs (RGB, RGBA, palette, grayscale with alpha, CMYK) and multi-page TIFFs (multi-channel, Z-stacks, time series, including ImageJ hyperstacks and OME-TIFF) are rejected; so are non-TIFF files such as PNG or BMP renamed to `.tif`.
+Colour TIFFs (RGB, RGBA, palette, grayscale with alpha, CMYK) are rejected; so are non-TIFF files such as PNG or BMP renamed to `.tif`. **Multi-page TIFFs (multi-channel, Z-stacks, time series, including ImageJ hyperstacks and OME-TIFF) are rejected while "Brightfield ROI" is off** and handled as described below when it is on; this replaces the flat refusal of multi-plane TIFFs in 0.4.3.
 
-**Exception: images whose extra planes are entirely 0 are allowed through.** Acquisition software such as MetaMorph attaches an empty overlay plane to each image; the real data in such files is still on the first page, the extra plane carries no signal and cannot produce a wrong value, so it is not rejected — the log simply says so, for example `Phsp16.2 0101-70-1.tif: 1 empty extra plane(s); treated as overlay`. Note that ImageJ does **not** skip this plane: it displays the image as 2 slices, so before measuring make sure the window is on slice 1.
+**Turning on "Brightfield ROI" lets multi-plane TIFFs be processed.** Tick "Brightfield ROI" in the left panel and, when you click "Start processing", the program asks **once** (for the whole batch) which plane holds the fluorescence and which holds the brightfield: **the brightfield plane is used to outline the ROIs, the fluorescence plane to produce the measurements**. ImageJ locates the plane to measure from the fluorescence plane number you gave, independently of whichever slice is currently displayed in the window. Single-plane TIFFs mixed into the folder are processed as usual, unaffected by the plane numbers. The brightfield weights ship with the package (`AutoWormImageJ\models\brightfield-0.1.0\`), so the switch works out of the box; should the weights be missing, the program reports the error explicitly and refuses to start rather than falling back to the high- or low-clarity model, and the dialog names the missing file and where it belongs.
 
-The reason for rejection is that the program reads only the **first page** of the file. In a batch, apart from the one image currently open in ImageJ, every image is reopened from disk by ImageJ and its first plane measured, consistent with the program; but **the one currently open** (the one the plug-in handed to the original interface) is measured by ImageJ at whatever channel, Z slice and time point the window is currently showing. As long as it is sitting on another plane, the ROIs drawn and the values actually measured will point at different planes, and **no error is raised anywhere**. The check therefore runs before processing starts and covers the whole batch: if even one image fails to qualify, the filenames are listed grouped by reason and the whole batch is rejected, rather than running part of it and then stopping. There is a cap on how many filenames are listed at once; above it a line "N images in total failed" is added, so the count is never under-reported.
+**Exception: images whose extra planes are entirely 0 are allowed through.** Acquisition software such as MetaMorph may attach an empty overlay plane to each image; the real data in such files is still on the first page, the extra plane carries no signal and cannot produce a wrong value, so it is not rejected — the log simply says so, for example `Phsp16.2 0101-70-1.tif: 1 empty extra plane(s); treated as overlay`. Note that ImageJ does **not** skip this plane: it displays the image as 2 slices, so before measuring make sure the window is on slice 1. **This exception is unchanged by Brightfield ROI** — the plane dialog only appears for files that have real data beyond the first plane, so an empty-overlay image is never asked about.
 
-For multi-channel or stack data, first split it into single-page TIFFs with ImageJ's `Image > Stacks > Stack to Images`, keep only the channel you want to measure, and process again.
+With Brightfield ROI off, the reason for rejection is that the program reads only the **first page** of the file. In a batch, apart from the one image currently open in ImageJ, every image is reopened from disk by ImageJ and its first plane measured, consistent with the program; but **the one currently open** (the one the plug-in handed to the original interface) is measured by ImageJ at whatever channel, Z slice and time point the window is currently showing. As long as it is sitting on another plane, the ROIs drawn and the values actually measured will point at different planes, and **no error is raised anywhere**. The check therefore runs before processing starts and covers the whole batch: if even one image fails to qualify, the filenames are listed grouped by reason and the whole batch is rejected, rather than running part of it and then stopping. There is a cap on how many filenames are listed at once; above it a line "N images in total failed" is added, so the count is never under-reported. **With Brightfield ROI on, multi-plane TIFFs are taken over by the plane dialog and no longer fall into this rejection.**
+
+For multi-channel or stack data there are two routes: **turn on "Brightfield ROI" and give the plane numbers** (recommended — the original files are left untouched), or first split the data into single-page TIFFs with ImageJ, keep only the channel you want to measure, and process again.
 
 Binary (1-bit) images are not among the formats above, but they are **not rejected**: before starting, the program points out that "this model was not trained on binary images" and, once confirmed, processes them as usual. Both models were trained on 8-bit and 16-bit acquisitions, so segmentation of binary images may be inaccurate; the notice stays, it just does not block the flow.
 
@@ -600,13 +650,16 @@ That is a notice, not an error; confirm it and processing continues as usual. Bi
 The missing one failed. Look in `batch_summary.csv` under the output folder's `other` subfolder for the row whose `qc_status` is `FAILED`; the `error` column gives the reason.
 
 **The whole batch was rejected, saying the images do not qualify.**
-Deal with the filenames and reasons listed in the dialog: split multi-channel or stack data with `Image > Stacks > Stack to Images`, and convert damaged or renamed non-TIFF files into proper single-page grayscale TIFFs.
+If the reason is the white dialog "需要打开明场ROI才可以处理多层TIFF" ("Brightfield ROI must be on to process multi-plane TIFFs"), see the next entry. Otherwise deal with the filenames and reasons listed in the dialog: split multi-channel or stack data with `Image > Stacks > Stack to Images`, and convert damaged or renamed non-TIFF files into proper single-page grayscale TIFFs.
+
+**It says "需要打开明场ROI才可以处理多层TIFF" (Brightfield ROI must be on to process multi-plane TIFFs).**
+Tick "Brightfield ROI" in the left panel and process again. Before starting, the program asks once (for the whole batch) which plane holds the fluorescence and which holds the brightfield: **the brightfield plane is used to outline the ROIs, the fluorescence plane to produce the measurements**; ImageJ locates the plane to measure from the fluorescence plane number you gave, independently of whichever slice is currently displayed in the window. If this batch genuinely needs no brightfield image, split the files into single-page TIFFs with `Image > Stacks > Stack to Images` and keep only the plane you want to measure. **This prompt replaces the flat refusal of multi-plane TIFFs in 0.4.3.** Note also that the brightfield weights ship with the package, so the switch works out of the box; only an incomplete release package (weights missing) makes it report the error explicitly and refuse to start rather than falling back to the high- or low-clarity model.
 
 **The log shows `Could not remove partial results for ...`.**
 One failed image's result files could not be deleted (usually the QC image is open in an image viewer). Close the viewer and delete them by hand using the filename in the log.
 
-**The image shows as several slices in ImageJ.**
-This is an image with an empty overlay plane, which is one of the allowed cases. Before measuring, make sure the window is on **slice 1**.
+**The image shows as several slices in ImageJ, but I did not acquire a fluorescence / brightfield stack.**
+This is an image with an empty overlay plane, which is one of the allowed cases. **While "Brightfield ROI" is off**, make sure the window is on **slice 1** before measuring. **With "Brightfield ROI" on this is different**: the plug-in locates the plane to measure from the fluorescence plane number you gave, independently of whichever slice is currently displayed in the window.
 
 **The worm count is wrong.**
 First check that the "image type" matches the model for your acquisition conditions, then check the expected worm count n. For images with heavy boundary adhesion, try smooth repair. If none of that works, use manual annotation to draw head-direction arrows or manual boundaries.
@@ -648,7 +701,7 @@ NVIDIA does not endorse or warrant this software in any way. When using the NVID
 Requires a JDK, and a Python environment with PyInstaller, PyTorch, OpenCV, SciPy, Pillow and roifile installed:
 
 ```bat
-build_0.4.3.bat "full path\python.exe"
+build_0.5.0.bat "full path\python.exe"
 ```
 
 The last build step copies the whole `licenses\` directory into `dist\AutoWormImageJ\licenses\`; if that directory is missing the build fails with an error rather than silently producing a package with no license notices.

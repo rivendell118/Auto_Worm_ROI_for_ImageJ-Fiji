@@ -38,6 +38,12 @@ from prepare_segmentation_dataset import (
     label_overlay, normalize_for_segmentation, resolve_overlaps)
 
 
+# 清单的列。放在模块级是为了让别的建库脚本（明场那份）引用同一份定义，
+# 而不是各自抄一遍——抄一份就会在下次加列时漏掉一边。
+DATASET_MANIFEST_FIELDS = ["Stem", "Split", "Source", "Issue", "Instances", "Width",
+                           "Height", "OverlapPixelsResolved"]
+
+
 def matching_image(roi_zip):
     """找到与 RoiSet_xxx.zip 对应的 TIFF，容忍 `<stem> <后缀>.tif` 这种命名。
 
@@ -211,8 +217,7 @@ def main():
                                     args.normalization, image_dir, mask_dir, overlay_dir,
                                     args.supplement_split, args.issue))
 
-    fields = ["Stem", "Split", "Source", "Issue", "Instances", "Width", "Height",
-              "OverlapPixelsResolved"]
+    fields = DATASET_MANIFEST_FIELDS
     for row in records:
         row.setdefault("OverlapPixelsResolved", 0)
     write_csv_rows(output_root / "dataset_manifest.csv", fields, records)

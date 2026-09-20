@@ -1,5 +1,6 @@
 import ij.IJ;
 import ij.ImagePlus;
+import ij.ImageStack;
 import ij.gui.Roi;
 import ij.io.RoiEncoder;
 import ij.measure.Calibration;
@@ -7,6 +8,7 @@ import ij.process.ShortProcessor;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -102,6 +104,9 @@ public class AutoWormMeasurementTest {
             aQuantizedPixelSizeIsNotADifference();
             aRealTiffRoundTripIsNotADifference();
             anUnvisitedImageKeepsItsTable();
+            theRequestedPlaneIsTheOneMeasured();
+            aPlaneBeyondTheStackIsSkippedAndReported();
+            aSinglePlaneImageIgnoresThePlaneNumber();
             System.out.println("AUTOWORM_MEASUREMENT_OK");
         } catch (Throwable failure) {
             // The pass under test ends by showing ImageJ's results window, and
@@ -663,6 +668,103 @@ public class AutoWormMeasurementTest {
      * cases look for. It is set through an instance method in ImageJ 1.54p even
      * though what it writes is static, so an image is needed to call it.
      */
+    /**
+     * The numbers come from the plane the GUI named, not from slice 1.
+     *
+     * This is the whole of 0.5.0's Java side, and it is the one thing a wrong
+     * implementation gets silently right-looking: measuring slice 1 of every
+     * image produces a complete, plausible table. Plane 1 of the fixture holds
+     * 100 and plane 2 holds 10, so the two readings cannot be confused, and both
+     * directions are checked -- a pass that always measured plane 2 would satisfy
+     * only one of them.
+     */
+    private static void theRequestedPlaneIsTheOneMeasured() throws Exception {
+        Path input = Files.createTempDirectory("autoworm-plane-in-");
+        Path output = Files.createTempDirectory("autoworm-plane-out-");
+        writeStackTiff(input.resolve("two_planes.tif"), 2);
+        writeRoiZip(other(output).resolve("two_planes_RoiSet.zip"));
+
+        Auto_Worm_ROI.measureOutputFolder(input.toFile(), output.toFile(), null, null,
+                false, false, 2);
+        String second = read(measurements(output).resolve("two_planes_measurements.csv"));
+        check(meanOf(second, "01_worm") == 10.0,
+                "the second plane was not the one that was measured: " + second);
+
+        // The same file again, this time asking for the plane that is first. The
+        // table from the previous pass has to be gone before the new one is
+        // judged, or this would read the old numbers.
+        Auto_Worm_ROI.measureOutputFolder(input.toFile(), output.toFile(), null, null,
+                false, false, 1);
+        String first = read(measurements(output).resolve("two_planes_measurements.csv"));
+        check(meanOf(first, "01_worm") == 100.0,
+                "the first plane was not the one that was measured: " + first);
+    }
+
+    /**
+     * A plane the file does not have is skipped, and the batch says so.
+     *
+     * Skipping rather than measuring something else is the point: a number from
+     * the wrong plane looks exactly like a number from the right one, which is
+     * the failure the whole feature exists to prevent. With nothing measured the
+     * pass reports it the way it reports an empty folder, and leaves no table
+     * behind for anyone to read as a result.
+     */
+    private static void aPlaneBeyondTheStackIsSkippedAndReported() throws Exception {
+        Path input = Files.createTempDirectory("autoworm-shallow-in-");
+        Path output = Files.createTempDirectory("autoworm-shallow-out-");
+        writeStackTiff(input.resolve("two_planes.tif"), 2);
+        writeRoiZip(other(output).resolve("two_planes_RoiSet.zip"));
+
+        boolean reported = false;
+        try {
+            Auto_Worm_ROI.measureOutputFolder(input.toFile(), output.toFile(), null, null,
+                    false, false, 5);
+        } catch (IOException expected) {
+            reported = true;
+        }
+        check(reported, "a batch where no image could be measured was reported as done");
+        check(!Files.exists(measurements(output).resolve("two_planes_measurements.csv")),
+                "a skipped image still produced a measurement table");
+    }
+
+    /**
+     * A single-plane image is measured whatever plane number the batch carries.
+     *
+     * Batches are allowed to hold both kinds (the window's decision 2), and the
+     * plane number is a property of the batch, so a single-plane file will often
+     * be handed one it has no plane for. Refusing it would throw away a perfectly
+     * measurable image.
+     */
+    private static void aSinglePlaneImageIgnoresThePlaneNumber() throws Exception {
+        Path input = Files.createTempDirectory("autoworm-single-in-");
+        Path output = Files.createTempDirectory("autoworm-single-out-");
+        writeTiff(input.resolve("single.tif"));
+        writeRoiZip(other(output).resolve("single_RoiSet.zip"));
+
+        Auto_Worm_ROI.measureOutputFolder(input.toFile(), output.toFile(), null, null,
+                false, false, 4);
+
+        check(Files.exists(measurements(output).resolve("single_measurements.csv")),
+                "a single-plane image was skipped because of the batch's plane number");
+    }
+
+    /**
+     * The Mean of the row for {@code label}, read by column and parsed.
+     *
+     * Located by header position rather than searched for as text: the table
+     * legitimately holds other numbers that contain "100" as a substring, so a
+     * contains() check could pass on a table measured from the wrong plane. And
+     * parsed rather than compared as a string because ImageJ writes a whole
+     * number as "10", not "10.0", which is not a fact these tests are about.
+     */
+    private static double meanOf(String table, String label) {
+        for (String line : table.split("\r?\n")) {
+            String[] cells = line.split(",", -1);
+            if (cells.length > 9 && cells[9].equals(label)) return Double.parseDouble(cells[1]);
+        }
+        throw new AssertionError("no row for " + label + " in: " + table);
+    }
+
     private static void clearGlobalCalibration() {
         ImagePlus image = new ImagePlus("", new ShortProcessor(1, 1));
         image.setGlobalCalibration(null);
@@ -670,6 +772,28 @@ public class AutoWormMeasurementTest {
 
     private static void writeTiff(Path path) throws Exception {
         ImagePlus image = new ImagePlus("test", new ShortProcessor(40, 40));
+        IJ.saveAsTiff(image, path.toString());
+        image.close();
+    }
+
+    /**
+     * A multi-plane TIFF: plane 1 filled with 100, every later plane with 10.
+     *
+     * The two values are the point. Uniform planes mean the Mean of a ROI is the
+     * plane's value exactly, and different values mean a pass that measured the
+     * wrong plane produces a visibly different number instead of an identical
+     * one -- a fixture where both planes held the same picture could not tell the
+     * difference the tests below are looking for.
+     */
+    private static void writeStackTiff(Path path, int planes) throws Exception {
+        ImageStack stack = new ImageStack(40, 40);
+        for (int index = 0; index < planes; index++) {
+            ShortProcessor plane = new ShortProcessor(40, 40);
+            int value = index == 0 ? 100 : 10;
+            for (int pixel = 0; pixel < plane.getPixelCount(); pixel++) plane.set(pixel, value);
+            stack.addSlice("plane " + (index + 1), plane);
+        }
+        ImagePlus image = new ImagePlus("test", stack);
         IJ.saveAsTiff(image, path.toString());
         image.close();
     }
